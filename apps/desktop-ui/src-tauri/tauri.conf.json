@@ -1,0 +1,46 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "心屿 XINYU",
+  "version": "0.1.0",
+  "identifier": "com.xinyu.companion",
+  "build": {
+    "frontendDist": "../dist/client",
+    "devUrl": "http://127.0.0.1:5173",
+    "beforeDevCommand": "npm run sidecar:build && npm run dev -- --host 127.0.0.1 --port 5173",
+    "beforeBuildCommand": "npm run sidecar:build && npm run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "心屿 XINYU",
+        "label": "main",
+        "width": 1600,
+        "height": 900,
+        "minWidth": 1280,
+        "minHeight": 720,
+        "center": true,
+        "decorations": false,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost data: blob:; media-src 'self' blob: http://127.0.0.1:8765; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:8765 ws://127.0.0.1:8765 http://127.0.0.1:5173 ws://127.0.0.1:5173"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "externalBin": ["binaries/xinyu-core"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "android": {
+      "debugApplicationIdSuffix": ".debug"
+    }
+  }
+}

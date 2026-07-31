@@ -3,6 +3,7 @@ node_modules/
 dist/
 .vite/
 coverage/
+.coverage
 
 # Local configuration and secrets
 .env
@@ -26,6 +27,7 @@ checkpoints/
 tmp/
 temp/
 .cache/
+apps/desktop-ui/src-tauri/binaries/
 
 # Editors and operating systems
 .idea/

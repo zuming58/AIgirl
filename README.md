@@ -2,7 +2,7 @@
 
 心屿是一款“本地优先”的陪伴式桌面智能体。项目目标不是只做一个聊天窗口，而是把低延迟语音交互、长期记忆、个人计划和可呼吸的数字角色整合成一个温暖、安静、可长期相处的桌面空间。
 
-> 当前仓库处于产品原型阶段：16:9 桌面 UI Demo 已可运行，“此刻 / 对话 / 回忆 / 计划 / 更多”页面可交互；实时语音、LLM、记忆服务和动态人物尚未接入生产链路。
+> 当前仓库处于可运行的本地应用骨架阶段：16:9 桌面 UI、Core API、SQLite 记忆与计划、提醒收件箱、备份恢复、Tauri 桌面壳和 Realtime 语音网关已经连通；本地语音/语言模型权重、动态人物素材和签名安装包仍需后续验收。
 
 ![心屿主界面](docs/assets/xinyu-moment-1920x1080.png)
 
@@ -10,10 +10,13 @@
 
 - 16:9 沉浸式陪伴主界面，支持 1366×768 与 1920×1080 等桌面尺寸
 - “此刻 / 对话 / 回忆 / 计划 / 更多”导航与页面切换
-- 音乐播放器、语音输入胶囊、心情状态、点滴卡片和明日清单
+- 可多选本机歌单的真实音乐播放器、语音输入胶囊、心情状态、点滴卡片和明日清单
 - 水晶心 Logo 与心跳动效
-- 对话列表、记忆时间线、计划看板的前端交互原型
-- Vite 构建、静态预览和站点 Worker 测试
+- 对话、可追溯结构化记忆、可编辑计划、到点提醒、心情和设置的本地 SQLite 持久化
+- 可替换的对话 Provider、运行状态页、JSON 导入导出、数据库快照/恢复与二次确认清除
+- Tauri 托盘、通知、开机启动、品牌图标和自动封装的 Python Core sidecar
+- 显式麦克风权限与设备选择、Realtime 双向语音代理、增量播放/插话状态和最终转写持久化
+- FastAPI / Repository 测试、Vite 构建和站点 Worker 测试
 
 更多页面效果：
 
@@ -24,12 +27,12 @@
 | 层级 | 当前选择 | 用途 |
 | --- | --- | --- |
 | UI 原型 | React 19 + Vite 6 | 快速验证桌面界面与交互 |
-| 桌面容器 | Tauri 2（计划） | Windows 桌面打包、托盘、原生能力与较低资源占用 |
+| 桌面容器 | Tauri 2（已建立工程） | 无边框窗口、托盘、通知、开机启动与 Core sidecar |
 | 实时语音 | Hugging Face `speech-to-speech`（子模块） | VAD → STT → LLM → TTS 的低延迟流水线 |
-| 智能体服务 | Python + FastAPI（计划） | 会话编排、工具调用、状态管理 |
-| 长期记忆 | SQLite + FTS5 + 向量检索（计划） | 用户事实、事件、关系和语义回忆 |
+| 智能体服务 | Python 3.11 + FastAPI | 会话编排、Provider 路由、状态与事件管理 |
+| 长期记忆 | SQLite + FTS5（已实现基础链路） | 用户事实、事件、来源、纠错和检索 |
 | 本地模型 | 可插拔 STT / LLM / TTS（计划） | 根据显存和隐私需求切换模型 |
-| 动态人物 | 2.5D 分层呼吸动效 → Live2D → 音频驱动肖像（分阶段） | 眨眼、呼吸、视线、表情与口型 |
+| 动态人物 | 写实状态视频库 + LivePortrait + MuseTalk 局部口型 | 以高质量模式实现眨眼、呼吸、视线、表情与音画同步 |
 
 详细选型与取舍见 [技术栈说明](docs/TECH_STACK.md) 和 [技术可行性与开发文档](docs/architecture/心屿-本地陪伴式智能体-技术可行性与开发文档.md)。
 
@@ -38,14 +41,16 @@
 ```text
 AIgirl/
 ├─ apps/
-│  └─ desktop-ui/             # 当前可运行的 React/Vite UI Demo
+│  └─ desktop-ui/             # React/Vite 桌面界面
+├─ services/
+│  └─ core/                   # FastAPI、SQLite、Provider 与测试
 ├─ docs/
 │  ├─ architecture/           # 原始蓝图与完整技术可行性文档
 │  ├─ design/                 # 页面规划、设计还原与验收记录
 │  ├─ DEVELOPMENT.md          # 开发环境、模块边界和调试流程
 │  ├─ TECH_STACK.md           # 技术栈与版本策略
 │  └─ ROADMAP.md              # 分阶段路线图
-├─ scripts/                   # 新电脑初始化脚本
+├─ scripts/                   # 初始化、完整启动与自动验证脚本
 └─ third_party/
    └─ speech-to-speech/       # Hugging Face 上游项目（Git 子模块）
 ```
@@ -57,7 +62,8 @@ AIgirl/
 - Git 2.40+
 - Node.js 20 LTS 或 22 LTS
 - npm 10+
-- 后续接入语音服务时再安装 Python 3.10/3.11、FFmpeg 与相应 CUDA 环境
+- Python 3.11 与 `uv`
+- 后续接入语音服务时再安装 FFmpeg 与相应 CUDA 环境
 
 ### 2. 克隆完整工程
 
@@ -73,27 +79,28 @@ cd AIgirl
 git submodule update --init --recursive
 ```
 
-### 3. 启动 UI Demo
+### 3. 启动本地应用
 
 ```powershell
-cd apps\desktop-ui
-npm run dev
+powershell -ExecutionPolicy Bypass -File .\scripts\dev.ps1 -Open
 ```
 
-浏览器打开终端提示的地址，通常是 `http://localhost:5173`。
+浏览器默认打开 `http://127.0.0.1:4173`，Core API 位于 `http://127.0.0.1:8765`。
 
 ### 4. 构建与测试
 
 ```powershell
-cd apps\desktop-ui
-npm run build
-npm run test:sites
+powershell -ExecutionPolicy Bypass -File .\scripts\test.ps1
 ```
 
 ## 文档入口
 
 - [开发手册](docs/DEVELOPMENT.md)：从新电脑初始化到模块接入
+- [实现状态矩阵](docs/IMPLEMENTATION_STATUS.md)：已实现、部分实现、人工门和验证证据
 - [技术栈说明](docs/TECH_STACK.md)：当前实现、目标架构与替代方案
+- [本地实时语音运行时](docs/VOICE_RUNTIME.md)：speech-to-speech 隔离环境、启动与人工门
+- [隐私与数据说明](docs/PRIVACY.md)：本地存储、网络流向、权限和用户控制
+- [人物资产规范](docs/AVATAR_ASSETS.md)：高质量状态视频的目录、编码和验收门
 - [产品路线图](docs/ROADMAP.md)：从 UI Demo 到本地实时陪伴智能体
 - [页面与交互规划](docs/design/页面与交互规划.md)：对话、回忆、计划和动态人物
 - [UI 设计验收记录](docs/design/UI-设计还原与验收记录.md)

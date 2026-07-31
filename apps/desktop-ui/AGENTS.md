@@ -12,8 +12,9 @@ Before making substantial visual changes, use the Product Design plugin's `get-c
 - Brand-lockup hierarchy: keep the heart compact, make the Chinese name slightly smaller, make `XINYU` larger with generous tracking, and set the subtitle as fine widely tracked type with a short trailing hairline.
 - Primary surface is a 16:9 desktop companion UI with a warm, mature romantic mood.
 - The woman and cozy room remain the visual focus; utility UI must stay light and avoid covering the character.
-- Keep the character centered slightly left rather than pushed to the far left. Feature pages open as a substantial right-side glass workspace so the character remains present and the previously empty night-window area becomes useful.
-- Top navigation is a centered capsule with `此刻 / 对话 / 回忆 / 计划 / 更多`.
+- The character's face and upper body should sit at the full-screen horizontal center without an oversized crop. The current original woman remains the approved fallback. Any future replacement must be clearly adult while emphasizing youthful energy, a lively high ponytail, clean natural makeup, warmth, and only a restrained hint of feminine allure; avoid a mature corporate or "older sophisticated" look. Preserve the intimate desk composition from the approved reference: the open notebook belongs directly beneath the character's forearms, with a mug in the right foreground, a succulent behind it, a warm lamp in the right mid-background, a photo wall on the left, and a darker rainy window region behind the right-side cards.
+- Top navigation is a capsule centered on the full viewport with `此刻 / 对话 / 回忆 / 计划 / 更多`; do not align it to the left content region.
+- Feature pages open as a substantial right-side glass workspace so the character remains present and the night-window area becomes useful.
 - Dialogue, Memory, and Plan are real interactive views. Dialogue visibly continues from prior context; Memory exposes source, confidence, correction, starring, search/filter, and forgetting controls; Plan covers personal work/life items plus shared promises and companion suggestions.
 - Right-side glass cards hold memories, tomorrow's checklist, and the evening note.
 - Bottom control dock is a slim rounded capsule with music, one uncluttered voice/text input, and an animated mood orb. Do not add quick-prompt buttons below the input.
