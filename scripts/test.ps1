@@ -19,21 +19,36 @@ Write-Host "Running core service tests..."
     -o cache_dir=$pytestCache `
     --cov=xinyu_core `
     --cov-report=term
+if ($LASTEXITCODE -ne 0) {
+    throw "Core service tests failed with exit code $LASTEXITCODE."
+}
 
 Write-Host "Building and checking the packaged Core sidecar..."
 & (Join-Path $scriptDirectory "test-core-sidecar.ps1")
 
 Write-Host "Building the desktop UI..."
 npm.cmd --prefix $uiDirectory run build
+if ($LASTEXITCODE -ne 0) {
+    throw "Desktop UI build failed with exit code $LASTEXITCODE."
+}
 
 Write-Host "Running desktop UI service tests..."
 npm.cmd --prefix $uiDirectory run test:unit
+if ($LASTEXITCODE -ne 0) {
+    throw "Desktop UI service tests failed with exit code $LASTEXITCODE."
+}
 
 Write-Host "Running Sites packaging tests..."
 npm.cmd --prefix $uiDirectory run test:sites
+if ($LASTEXITCODE -ne 0) {
+    throw "Sites packaging tests failed with exit code $LASTEXITCODE."
+}
 
 Write-Host "Checking patch whitespace..."
 git -C $repositoryRoot diff --check
+if ($LASTEXITCODE -ne 0) {
+    throw "Patch whitespace validation failed with exit code $LASTEXITCODE."
+}
 
 Write-Host "Validating PowerShell scripts..."
 $scriptFiles = Get-ChildItem -LiteralPath $scriptDirectory -Filter *.ps1

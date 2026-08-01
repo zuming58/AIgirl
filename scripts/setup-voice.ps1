@@ -25,10 +25,16 @@ if ($null -eq $uv) {
 
 if (-not (Test-Path -LiteralPath $voicePython)) {
     & $uv.Source venv $voiceEnvironment --python 3.11
+    if ($LASTEXITCODE -ne 0) {
+        throw "Voice environment creation failed with exit code $LASTEXITCODE."
+    }
 }
 
 $voicePackage = "$voiceSource[faster-whisper]"
-& $voicePython -m pip install --disable-pip-version-check --editable $voicePackage
+& $uv.Source pip install --python $voicePython --editable $voicePackage
+if ($LASTEXITCODE -ne 0) {
+    throw "Voice dependency installation failed with exit code $LASTEXITCODE."
+}
 
 Write-Host "Voice runtime dependencies are installed in .venv-voice."
 Write-Host "No STT or TTS model weights were downloaded by this script."

@@ -45,6 +45,12 @@ powershell -ExecutionPolicy Bypass -File .\scripts\dev.ps1 -Open
 
 `dev.ps1` 会同时管理 UI 与 Core 生命周期，按 `Ctrl+C` 后停止本次启动的 Core 进程。运行数据默认位于 `temp/runtime/`，不进入 Git。
 
+如果默认 Core 端口已被其他本地服务占用，可以只调整 Core 端口；脚本会自动让 UI 连接到新地址：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\dev.ps1 -Open -CorePort 8767
+```
+
 ## 4. 自动验证
 
 ```powershell
