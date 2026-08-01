@@ -19,6 +19,7 @@ class ChatProvider(ABC):
         history: list[MessageRecord],
         persona: PersonaRecord,
         memories: list[str],
+        conversation_summary: str | None = None,
     ) -> str:
         raise NotImplementedError
 
@@ -32,6 +33,7 @@ class DevelopmentCompanionProvider(ChatProvider):
         history: list[MessageRecord],
         persona: PersonaRecord,
         memories: list[str],
+        conversation_summary: str | None = None,
     ) -> str:
         normalized = message.strip()
         if any(token in normalized for token in ("累", "难受", "焦虑", "烦")):
@@ -61,6 +63,7 @@ class OpenAICompatibleProvider(ChatProvider):
         history: list[MessageRecord],
         persona: PersonaRecord,
         memories: list[str],
+        conversation_summary: str | None = None,
     ) -> str:
         system = (
             f"你是{persona.name}，角色是{persona.relationship_role}。"
@@ -69,6 +72,12 @@ class OpenAICompatibleProvider(ChatProvider):
         )
         if memories:
             system += "\n可引用但不要过度强调的相关记忆：\n- " + "\n- ".join(memories[:5])
+        if conversation_summary:
+            system += (
+                "\n以下是用户可查看和管理的既有对话摘要，仅用于保持上下文，"
+                "不要把其中未确认内容升级为事实：\n"
+                + conversation_summary[:8_000]
+            )
         messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
         messages.extend(
             {"role": item.role, "content": item.content}

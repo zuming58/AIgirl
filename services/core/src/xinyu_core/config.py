@@ -23,6 +23,9 @@ class AppConfig:
     llm_base_url: str | None = None
     llm_model: str = "local-companion"
     llm_api_key: str | None = None
+    embedding_base_url: str | None = None
+    embedding_model: str = "BAAI/bge-small-zh-v1.5"
+    embedding_api_key: str | None = None
     speech_realtime_url: str | None = None
     app_version: str = "0.1.0"
 
@@ -36,5 +39,11 @@ class AppConfig:
             llm_base_url=os.getenv("XINYU_LLM_BASE_URL") or None,
             llm_model=os.getenv("XINYU_LLM_MODEL", "local-companion"),
             llm_api_key=os.getenv("XINYU_LLM_API_KEY") or None,
+            embedding_base_url=os.getenv("XINYU_EMBEDDING_BASE_URL") or None,
+            embedding_model=os.getenv(
+                "XINYU_EMBEDDING_MODEL",
+                "BAAI/bge-small-zh-v1.5",
+            ),
+            embedding_api_key=os.getenv("XINYU_EMBEDDING_API_KEY") or None,
             speech_realtime_url=os.getenv("XINYU_SPEECH_REALTIME_URL") or None,
         )

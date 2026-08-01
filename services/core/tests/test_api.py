@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 from xinyu_core.app import create_app
 from xinyu_core.config import AppConfig
-from xinyu_core.contracts import PlanCreate
+from xinyu_core.contracts import MemoryCreate, PlanCreate
 
 
 class FailingProvider:
@@ -14,6 +14,23 @@ class FailingProvider:
 
     async def reply(self, *args, **kwargs) -> str:
         raise RuntimeError("simulated provider outage")
+
+
+class CapturingProvider:
+    id = "capturing-test-provider"
+
+    def __init__(self) -> None:
+        self.history = []
+        self.memories = []
+        self.summary = None
+
+    async def reply(
+        self, message, history, persona, memories, conversation_summary=None
+    ) -> str:
+        self.history = history
+        self.memories = memories
+        self.summary = conversation_summary
+        return "已记录上下文"
 
 
 def make_client(tmp_path: Path) -> TestClient:
@@ -113,10 +130,104 @@ def test_chat_persists_messages_and_explicit_memory(tmp_path: Path) -> None:
         report = diagnostics.json()
         assert report["counts"]["messages"] == 2
         assert report["counts"]["memories"] == 1
-        assert report["database"]["schema_version"] == 1
+        assert report["database"]["schema_version"] == 2
         assert report["privacy"]["contains_private_content"] is False
         assert "少糖拿铁" not in diagnostics.text
         assert str(tmp_path) not in diagnostics.text
+
+
+def test_memory_index_and_summary_api_contracts(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        memory = client.post(
+            "/v1/memories",
+            json={
+                "kind": "preference",
+                "title": "饮品",
+                "content": "喜欢少糖拿铁",
+            },
+        ).json()
+        updated = client.patch(
+            f"/v1/memories/{memory['id']}",
+            json={"content": "喜欢无糖拿铁"},
+        )
+        assert updated.status_code == 200
+        assert updated.json()["content"] == "喜欢无糖拿铁"
+
+        index_status = client.get("/v1/memories/index/status")
+        assert index_status.status_code == 200
+        assert index_status.json()["status"] == "disabled"
+        rebuild = client.post("/v1/memories/index/rebuild")
+        assert rebuild.status_code == 202
+        assert rebuild.json()["status"] == "disabled"
+
+        chat = client.post("/v1/chat", json={"message": "第一条消息"}).json()
+        summary = client.post(
+            f"/v1/conversations/{chat['session_id']}/summaries"
+        )
+        assert summary.status_code == 409
+
+        for index in range(6):
+            client.post(
+                "/v1/chat",
+                json={
+                    "session_id": chat["session_id"],
+                    "message": f"继续对话 {index}",
+                },
+            )
+        summary = client.post(
+            f"/v1/conversations/{chat['session_id']}/summaries"
+        )
+        assert summary.status_code == 202
+        assert summary.json()["status"] == "unavailable"
+        listed = client.get("/v1/conversation-summaries").json()
+        assert listed["total"] == 1
+        summary_id = listed["items"][0]["id"]
+        assert client.delete(
+            f"/v1/conversation-summaries/{summary_id}"
+        ).status_code == 204
+        assert client.get("/v1/conversation-summaries").json()["total"] == 0
+
+
+def test_chat_injects_active_summary_recent_history_and_at_most_five_memories(
+    tmp_path: Path,
+) -> None:
+    with make_client(tmp_path) as client:
+        repository = client.app.state.repository
+        session_id = repository.ensure_session("context-session", "text")
+        for index in range(30):
+            repository.add_message(
+                session_id,
+                "user" if index % 2 == 0 else "assistant",
+                f"历史消息 {index + 1}",
+            )
+        summary_messages = repository.summary_messages(session_id)
+        summary = repository.create_summary_job(
+            session_id, summary_messages, "test", "test-model"
+        )
+        repository.complete_summary(summary.id, "有效摘要")
+        for index in range(7):
+            repository.create_memory(
+                MemoryCreate(
+                    kind="episode",
+                    title=f"共同经历 {index}",
+                    content=f"上下文线索 {index}",
+                    salience=1 - index * 0.05,
+                )
+            )
+        provider = CapturingProvider()
+        client.app.state.chat_service.provider = provider
+
+        response = client.post(
+            "/v1/chat",
+            json={"session_id": session_id, "message": "上下文线索"},
+        )
+
+        assert response.status_code == 200
+        assert provider.summary == "有效摘要"
+        assert len(provider.memories) <= 5
+        assert len(provider.history) == 12
+        assert provider.history[0].content == "历史消息 19"
+        assert provider.history[-1].content == "历史消息 30"
 
 
 def test_plan_persona_mood_and_export(tmp_path: Path) -> None:
@@ -149,7 +260,7 @@ def test_plan_persona_mood_and_export(tmp_path: Path) -> None:
             },
         ).json()
         assert mood["closeness"] == 0.8
-        assert client.get("/v1/data/export").json()["schema_version"] == 1
+        assert client.get("/v1/data/export").json()["schema_version"] == 2
 
 
 def test_settings_voice_and_data_lifecycle(tmp_path: Path) -> None:

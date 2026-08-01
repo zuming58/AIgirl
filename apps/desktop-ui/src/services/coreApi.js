@@ -74,6 +74,9 @@ export const coreApi = {
     request(`/v1/conversations/${encodeURIComponent(sessionId)}/messages`),
   queryMemories: (value = {}) =>
     request("/v1/memories/query", jsonOptions("POST", value)),
+  memoryIndexStatus: () => request("/v1/memories/index/status"),
+  rebuildMemoryIndex: () =>
+    request("/v1/memories/index/rebuild", { method: "POST" }),
   createMemory: (value) =>
     request("/v1/memories", jsonOptions("POST", value)),
   memoryContext: (id) =>
@@ -85,6 +88,20 @@ export const coreApi = {
     ),
   deleteMemory: (id) =>
     request(`/v1/memories/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  conversationSummaries: (sessionId = null, limit = 50, offset = 0) => {
+    const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    if (sessionId) params.set("session_id", sessionId);
+    return request(`/v1/conversation-summaries?${params}`);
+  },
+  generateConversationSummary: (sessionId) =>
+    request(
+      `/v1/conversations/${encodeURIComponent(sessionId)}/summaries`,
+      { method: "POST" },
+    ),
+  deleteConversationSummary: (id) =>
+    request(`/v1/conversation-summaries/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
   listPlans: (includeCompleted = true) =>
     request(`/v1/plans?include_completed=${includeCompleted}`),
   createPlan: (value) =>

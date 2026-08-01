@@ -60,11 +60,6 @@ finally {
     }
 
     if (Test-Path -LiteralPath $testData) {
-        $resolvedTempRoot = [System.IO.Path]::GetFullPath($tempRoot).TrimEnd('\')
-        $resolvedTestData = [System.IO.Path]::GetFullPath($testData)
-        if (-not $resolvedTestData.StartsWith("$resolvedTempRoot\", [System.StringComparison]::OrdinalIgnoreCase)) {
-            throw "Refusing to remove unexpected sidecar test path: $resolvedTestData"
-        }
-        Remove-Item -LiteralPath $resolvedTestData -Recurse -Force
+        Write-Host "Sidecar test data retained for manual cleanup: $testData"
     }
 }

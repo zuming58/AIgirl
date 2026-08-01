@@ -188,6 +188,41 @@ class MemoryQuery(ApiModel):
     limit: int = Field(default=50, ge=1, le=200)
 
 
+class MemoryIndexStatus(ApiModel):
+    status: Literal["ready", "building", "degraded", "disabled"]
+    model: str | None = None
+    dimensions: int | None = None
+    indexed_count: int = 0
+    pending_count: int = 0
+    last_error: str | None = None
+
+
+class MemoryIndexRebuildResponse(ApiModel):
+    status: Literal["building", "disabled"]
+    pending_count: int
+
+
+class ConversationSummaryRecord(ApiModel):
+    id: str
+    session_id: str
+    first_message_id: str
+    last_message_id: str
+    message_count: int
+    content: str
+    status: Literal["pending", "ready", "failed", "unavailable", "deleted"]
+    provider: str | None = None
+    model: str | None = None
+    error_code: str | None = None
+    created_at: datetime
+    updated_at: datetime
+    deleted_at: datetime | None = None
+
+
+class ConversationSummaryList(ApiModel):
+    items: list[ConversationSummaryRecord]
+    total: int
+
+
 class PlanCreate(ApiModel):
     title: str = Field(min_length=1, max_length=240)
     description: str = Field(default="", max_length=4_000)

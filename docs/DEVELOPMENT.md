@@ -105,6 +105,7 @@ npm run tauri:build
 apps/desktop-ui/
 ├─ src/App.jsx                 # 当前五个功能页和业务交互
 ├─ src/services/coreApi.js     # Core API / WebSocket 适配器
+├─ src/services/memoryWorkspace.js # 记忆索引与摘要管理服务
 ├─ src/services/desktopBridge.js # Tauri 与网页安全回退
 ├─ src/services/speechClient.js  # 上游 Realtime 客户端与麦克风释放适配
 ├─ src/styles.css              # 16:9 桌面布局和组件视觉
@@ -118,6 +119,9 @@ services/core/
 ├─ src/xinyu_core/repository.py# 数据访问
 ├─ src/xinyu_core/services.py  # 对话与记忆编排
 ├─ src/xinyu_core/providers.py # 开发回退和 OpenAI-compatible LLM
+├─ src/xinyu_core/embeddings.py# OpenAI-compatible embedding 接口
+├─ src/xinyu_core/memory_intelligence.py # FTS5 / 向量混合召回与索引任务
+├─ src/xinyu_core/summaries.py # 长对话摘要任务与真实 LLM Provider
 ├─ src/xinyu_core/avatar.py    # 人物状态机与高质量视频资产探测
 ├─ src/xinyu_core/reminders.py # 安静时段、到点提醒和持久化收件箱
 └─ tests/                      # API 与仓储回归测试
@@ -136,9 +140,15 @@ Core 只监听回环地址。可通过环境变量覆盖：
 | `XINYU_LLM_BASE_URL` | 空 | OpenAI-compatible 本地或受控服务地址 |
 | `XINYU_LLM_MODEL` | 空 | 模型 ID |
 | `XINYU_LLM_API_KEY` | 空 | Provider 密钥；不得提交到 Git |
+| `XINYU_EMBEDDING_BASE_URL` | 空 | OpenAI-compatible `/v1` 服务地址；未配置时使用 FTS5/LIKE |
+| `XINYU_EMBEDDING_MODEL` | `BAAI/bge-small-zh-v1.5` | 512 维中文 embedding 模型 ID |
+| `XINYU_EMBEDDING_API_KEY` | 空 | 可选 embedding 服务密钥；不得提交到 Git |
 | `XINYU_SPEECH_REALTIME_URL` | 空 | speech-to-speech Realtime 地址，例如 `ws://127.0.0.1:8766/v1/realtime` |
 
 未配置 LLM 时使用可识别的 `development-fallback` 回复，仅用于验证全链路，不冒充真实模型能力。
+对话摘要不会使用该回退 Provider 伪造内容；未配置真实 LLM 时记录
+`unavailable / llm_not_configured`，并继续使用最近原始消息。embedding 未配置或
+不可用时，聊天与记忆查询继续使用 FTS5/LIKE，不自动下载模型。
 
 ## 7. 已实现接口
 
@@ -155,8 +165,13 @@ Core 只监听回环地址。可通过环境变量覆盖：
 - `GET /v1/conversations/{session_id}/messages`
 - `POST /v1/memories`
 - `POST /v1/memories/query`
+- `GET /v1/memories/index/status`
+- `POST /v1/memories/index/rebuild`
 - `GET /v1/memories/{id}/context`
 - `PATCH / DELETE /v1/memories/{id}`
+- `GET /v1/conversation-summaries`
+- `POST /v1/conversations/{session_id}/summaries`
+- `DELETE /v1/conversation-summaries/{id}`
 - `GET / POST /v1/plans`
 - `PATCH / DELETE /v1/plans/{id}`
 - `GET /v1/notifications`
@@ -189,11 +204,15 @@ SQLite 采用 WAL，迁移位于 `services/core/src/xinyu_core/migrations/`。�
 - 人格与版本；
 - 会话、消息和回合；
 - 结构化记忆、来源、关系边与 FTS5；
+- 可重建的 512 维 sqlite-vec 索引元数据；
+- 用户可见、可删除、可手动重建的长对话摘要；
 - 心情状态；
 - 计划、承诺和工具运行；
 - 主动事件、媒体资产、设置和模型注册表。
 
-自动记忆仅处理用户明确要求记住的高置信表达。用户可以主动添加、查看来源消息、理解“为什么记得”、编辑、置顶和删除；同槽新事实会保留替代关系，未确认且未收藏的系统推断 180 天后过期。完整数据可以导入/导出。数据库快照经过 SQLite 完整性和版本校验，恢复、导入和清除都带确认步骤，导入或清除前会先创建安全快照。
+自动记忆仅处理用户明确要求记住的高置信表达。用户可以主动添加、查看来源消息、理解“为什么记得”、编辑、置顶和删除；同槽新事实会保留替代关系，未确认且未收藏的系统推断 180 天后过期。每个会话累计 24 条消息后可生成首份摘要，此后每 12 条增量更新，并始终保留最近 12 条原始消息。摘要不自动升级为长期记忆，删除后保留覆盖墓碑，只有用户主动重建才会再次生成。
+
+JSON schema 当前为 v2：导出包含用户可见摘要但不包含向量；导入兼容 v1，导入后会按当前模型异步重建向量。数据库快照经过 SQLite 完整性和版本校验，恢复、导入和清除都带确认步骤，导入或清除前会先创建安全快照。
 
 温柔问候默认只在用户已有互动且约 4 小时未交流时评估；遵守
 `privacy.quiet_hours`，同类问候冷却 4 小时且每日最多 2 次。全局主动陪伴和

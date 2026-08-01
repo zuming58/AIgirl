@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from array import array
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
 from .contracts import (
+    ConversationSummaryRecord,
     DataExport,
     MemoryCreate,
     MemoryContext,
@@ -41,6 +43,7 @@ class Repository:
         "turns",
         "memories",
         "memory_edges",
+        "conversation_summaries",
         "mood_states",
         "tasks",
         "commitments",
@@ -189,8 +192,12 @@ class Repository:
         with self.database.connect() as connection:
             rows = connection.execute(
                 """
-                SELECT * FROM messages WHERE session_id=?
-                ORDER BY created_at ASC LIMIT ?
+                SELECT * FROM (
+                    SELECT rowid AS message_rowid, * FROM messages
+                    WHERE session_id=?
+                    ORDER BY created_at DESC, rowid DESC LIMIT ?
+                )
+                ORDER BY created_at ASC, message_rowid ASC
                 """,
                 (session_id, limit),
             ).fetchall()
@@ -264,6 +271,7 @@ class Repository:
                     "DELETE FROM memory_search WHERE memory_id=?",
                     (superseded.id,),
                 )
+                self._remove_memory_embedding(connection, superseded.id)
             connection.execute(
                 """
                 INSERT INTO memories(
@@ -463,6 +471,7 @@ class Repository:
                 updated["title"],
                 updated["content"],
             )
+            self._remove_memory_embedding(connection, memory_id)
         return self._memory_from_row(updated)
 
     def delete_memory(self, memory_id: str) -> bool:
@@ -472,6 +481,7 @@ class Repository:
                 (iso_now(), iso_now(), memory_id),
             )
             connection.execute("DELETE FROM memory_search WHERE memory_id=?", (memory_id,))
+            self._remove_memory_embedding(connection, memory_id)
         return cursor.rowcount > 0
 
     def expire_stale_memories(
@@ -509,7 +519,352 @@ class Repository:
                     "DELETE FROM memory_search WHERE memory_id=?",
                     [(memory_id,) for memory_id in ids],
                 )
+                for memory_id in ids:
+                    self._remove_memory_embedding(connection, memory_id)
         return len(ids)
+
+    def active_memories_for_index(self) -> list[MemoryRecord]:
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM memories
+                WHERE deleted_at IS NULL AND valid_to IS NULL
+                ORDER BY updated_at ASC
+                """
+            ).fetchall()
+        return [self._memory_from_row(row) for row in rows]
+
+    def save_memory_embedding(
+        self,
+        memory_id: str,
+        content_hash: str,
+        model_id: str,
+        vector: list[float],
+    ) -> None:
+        if len(vector) != 512:
+            raise ValueError("embedding_dimension_mismatch")
+        payload = array("f", vector).tobytes()
+        now = iso_now()
+        with self.database.connect() as connection:
+            self._remove_memory_embedding(connection, memory_id)
+            connection.execute(
+                """
+                INSERT INTO memory_embeddings(
+                    memory_id, content_hash, model_id, dimensions, indexed_at
+                ) VALUES(?, ?, ?, 512, ?)
+                """,
+                (memory_id, content_hash, model_id, now),
+            )
+            try:
+                connection.execute(
+                    "INSERT INTO memory_vectors(memory_id, embedding) VALUES(?, ?)",
+                    (memory_id, payload),
+                )
+            except sqlite3.OperationalError as error:
+                connection.execute(
+                    "DELETE FROM memory_embeddings WHERE memory_id=?",
+                    (memory_id,),
+                )
+                raise RuntimeError("sqlite_vec_unavailable") from error
+
+    def memory_vector_search(
+        self,
+        vector: list[float],
+        query: MemoryQuery,
+        limit: int,
+    ) -> list[MemoryRecord]:
+        if len(vector) != 512:
+            return []
+        payload = array("f", vector).tobytes()
+        try:
+            with self.database.connect() as connection:
+                nearest = connection.execute(
+                    """
+                    SELECT memory_id
+                    FROM memory_vectors
+                    WHERE embedding MATCH ? AND k = ?
+                    ORDER BY distance
+                    """,
+                    (payload, max(limit * 4, 20)),
+                ).fetchall()
+        except (sqlite3.Error, RuntimeError):
+            return []
+        ranked_ids = [row["memory_id"] for row in nearest]
+        if not ranked_ids:
+            return []
+        records = {item.id: item for item in self.memories_by_ids(ranked_ids, query)}
+        return [records[memory_id] for memory_id in ranked_ids if memory_id in records][
+            :limit
+        ]
+
+    def memories_by_ids(
+        self,
+        memory_ids: list[str],
+        query: MemoryQuery,
+    ) -> list[MemoryRecord]:
+        if not memory_ids:
+            return []
+        placeholders = ",".join("?" for _ in memory_ids)
+        conditions = [
+            f"id IN ({placeholders})",
+            "deleted_at IS NULL",
+            "valid_to IS NULL",
+        ]
+        params: list[Any] = list(memory_ids)
+        if query.kinds:
+            kind_placeholders = ",".join("?" for _ in query.kinds)
+            conditions.append(f"kind IN ({kind_placeholders})")
+            params.extend(query.kinds)
+        if query.starred_only:
+            conditions.append("starred=1")
+        if not query.include_sensitive:
+            conditions.append("sensitivity='normal'")
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM memories WHERE {' AND '.join(conditions)}",
+                params,
+            ).fetchall()
+        return [self._memory_from_row(row) for row in rows]
+
+    def memory_index_status(self, model_id: str) -> dict[str, Any]:
+        with self.database.connect() as connection:
+            active_count = int(
+                connection.execute(
+                    """
+                    SELECT COUNT(*) FROM memories
+                    WHERE deleted_at IS NULL AND valid_to IS NULL
+                    """
+                ).fetchone()[0]
+            )
+            indexed_count = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM memory_embeddings WHERE model_id=?",
+                    (model_id,),
+                ).fetchone()[0]
+            )
+            state = connection.execute(
+                "SELECT * FROM memory_index_state WHERE id=1"
+            ).fetchone()
+        return {
+            "status": state["status"] if state else "disabled",
+            "model": state["model_id"] if state else model_id,
+            "dimensions": state["dimensions"] if state else None,
+            "indexed_count": indexed_count,
+            "pending_count": max(0, active_count - indexed_count),
+            "last_error": state["last_error"] if state else None,
+        }
+
+    def set_memory_index_state(
+        self,
+        status: str,
+        model_id: str,
+        *,
+        dimensions: int | None = None,
+        last_error: str | None = None,
+    ) -> None:
+        with self.database.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO memory_index_state(
+                    id, status, model_id, dimensions, last_error, updated_at
+                ) VALUES(1, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    status=excluded.status,
+                    model_id=excluded.model_id,
+                    dimensions=excluded.dimensions,
+                    last_error=excluded.last_error,
+                    updated_at=excluded.updated_at
+                """,
+                (status, model_id, dimensions, last_error, iso_now()),
+            )
+
+    def clear_memory_embeddings(self) -> None:
+        with self.database.connect() as connection:
+            connection.execute("DELETE FROM memory_embeddings")
+            try:
+                connection.execute("DELETE FROM memory_vectors")
+            except sqlite3.OperationalError:
+                pass
+
+    def count_messages(self, session_id: str) -> int:
+        with self.database.connect() as connection:
+            return int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM messages WHERE session_id=?",
+                    (session_id,),
+                ).fetchone()[0]
+            )
+
+    def summary_messages(
+        self,
+        session_id: str,
+        *,
+        keep_recent: int = 12,
+    ) -> list[MessageRecord]:
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM messages
+                WHERE session_id=?
+                ORDER BY created_at ASC, rowid ASC
+                LIMIT MAX(
+                    (SELECT COUNT(*) FROM messages WHERE session_id=?) - ?,
+                    0
+                )
+                """,
+                (session_id, session_id, keep_recent),
+            ).fetchall()
+        return [self._message_from_row(row) for row in rows]
+
+    def create_summary_job(
+        self,
+        session_id: str,
+        messages: list[MessageRecord],
+        provider: str | None,
+        model: str | None,
+    ) -> ConversationSummaryRecord:
+        if not messages:
+            raise ValueError("summary_has_no_messages")
+        now = utc_now()
+        record = ConversationSummaryRecord(
+            id=str(uuid4()),
+            session_id=session_id,
+            first_message_id=messages[0].id,
+            last_message_id=messages[-1].id,
+            message_count=len(messages),
+            content="",
+            status="pending",
+            provider=provider,
+            model=model,
+            created_at=now,
+            updated_at=now,
+        )
+        with self.database.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO conversation_summaries(
+                    id, session_id, first_message_id, last_message_id,
+                    message_count, content, status, provider, model,
+                    created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, '', 'pending', ?, ?, ?, ?)
+                """,
+                (
+                    record.id,
+                    record.session_id,
+                    record.first_message_id,
+                    record.last_message_id,
+                    record.message_count,
+                    record.provider,
+                    record.model,
+                    record.created_at.isoformat(),
+                    record.updated_at.isoformat(),
+                ),
+            )
+        return record
+
+    def complete_summary(self, summary_id: str, content: str) -> None:
+        with self.database.connect() as connection:
+            connection.execute(
+                """
+                UPDATE conversation_summaries
+                SET content=?, status='ready', error_code=NULL, updated_at=?
+                WHERE id=? AND deleted_at IS NULL
+                """,
+                (content, iso_now(), summary_id),
+            )
+
+    def fail_summary(self, summary_id: str, status: str, error_code: str) -> None:
+        with self.database.connect() as connection:
+            connection.execute(
+                """
+                UPDATE conversation_summaries
+                SET status=?, error_code=?, updated_at=?
+                WHERE id=? AND deleted_at IS NULL
+                """,
+                (status, error_code, iso_now(), summary_id),
+            )
+
+    def list_summaries(
+        self,
+        *,
+        session_id: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[ConversationSummaryRecord], int]:
+        conditions = ["deleted_at IS NULL"]
+        params: list[Any] = []
+        if session_id:
+            conditions.append("session_id=?")
+            params.append(session_id)
+        condition = f"WHERE {' AND '.join(conditions)}"
+        with self.database.connect() as connection:
+            total = int(
+                connection.execute(
+                    f"SELECT COUNT(*) FROM conversation_summaries {condition}",
+                    params,
+                ).fetchone()[0]
+            )
+            rows = connection.execute(
+                f"""
+                SELECT * FROM conversation_summaries {condition}
+                ORDER BY updated_at DESC LIMIT ? OFFSET ?
+                """,
+                [*params, limit, offset],
+            ).fetchall()
+        return [self._summary_from_row(row) for row in rows], total
+
+    def active_summary(self, session_id: str) -> ConversationSummaryRecord | None:
+        with self.database.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM conversation_summaries
+                WHERE session_id=? AND status='ready' AND deleted_at IS NULL
+                ORDER BY updated_at DESC LIMIT 1
+                """,
+                (session_id,),
+            ).fetchone()
+        return self._summary_from_row(row) if row else None
+
+    def latest_summary_coverage(self, session_id: str) -> int:
+        with self.database.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT COALESCE(MAX(message_count), 0)
+                FROM conversation_summaries WHERE session_id=?
+                """,
+                (session_id,),
+            ).fetchone()
+        return int(row[0])
+
+    def delete_summary(self, summary_id: str) -> bool:
+        with self.database.connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE conversation_summaries
+                SET status='deleted', deleted_at=?, updated_at=?
+                WHERE id=? AND deleted_at IS NULL
+                """,
+                (iso_now(), iso_now(), summary_id),
+            )
+        return cursor.rowcount > 0
+
+    def pending_summary_ids(self) -> list[str]:
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id FROM conversation_summaries
+                WHERE status='pending' AND deleted_at IS NULL
+                """
+            ).fetchall()
+        return [row["id"] for row in rows]
+
+    def summary_job(self, summary_id: str) -> ConversationSummaryRecord | None:
+        with self.database.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM conversation_summaries WHERE id=?",
+                (summary_id,),
+            ).fetchone()
+        return self._summary_from_row(row) if row else None
 
     def create_plan(self, value: PlanCreate) -> PlanRecord:
         now = utc_now()
@@ -973,12 +1328,17 @@ class Repository:
         schema_version: int,
         data: dict[str, list[dict[str, Any]]],
     ) -> int:
-        if schema_version != self.database.current_schema_version:
+        if schema_version not in {1, self.database.current_schema_version}:
             raise ValueError("Import schema version is not supported")
-        import_tables = tuple(
+        target_tables = tuple(
             table for table in self.export_tables if table != "model_registry"
         )
-        missing = set(import_tables).difference(data)
+        source_tables = (
+            tuple(table for table in target_tables if table != "conversation_summaries")
+            if schema_version == 1
+            else target_tables
+        )
+        missing = set(source_tables).difference(data)
         unknown = set(data).difference(self.export_tables)
         if missing:
             raise ValueError(
@@ -995,11 +1355,16 @@ class Repository:
         imported_rows = 0
         with self.database.connect() as connection:
             connection.execute("PRAGMA foreign_keys = OFF")
-            for table in reversed(import_tables):
+            for table in reversed(target_tables):
                 connection.execute(f"DELETE FROM {table}")
             connection.execute("DELETE FROM memory_search")
+            connection.execute("DELETE FROM memory_embeddings")
+            try:
+                connection.execute("DELETE FROM memory_vectors")
+            except sqlite3.OperationalError:
+                pass
 
-            for table in import_tables:
+            for table in source_tables:
                 columns = {
                     row["name"]
                     for row in connection.execute(
@@ -1049,6 +1414,11 @@ class Repository:
                 if table not in protected:
                     connection.execute(f"DELETE FROM {table}")
             connection.execute("DELETE FROM memory_search")
+            connection.execute("DELETE FROM memory_embeddings")
+            try:
+                connection.execute("DELETE FROM memory_vectors")
+            except sqlite3.OperationalError:
+                pass
             connection.execute("PRAGMA foreign_keys = ON")
         self.database.initialize()
 
@@ -1064,6 +1434,52 @@ class Repository:
         connection.execute(
             "INSERT INTO memory_search(memory_id, kind, title, content) VALUES(?, ?, ?, ?)",
             (memory_id, kind, title, content),
+        )
+
+    @staticmethod
+    def _remove_memory_embedding(
+        connection: sqlite3.Connection,
+        memory_id: str,
+    ) -> None:
+        connection.execute(
+            "DELETE FROM memory_embeddings WHERE memory_id=?",
+            (memory_id,),
+        )
+        try:
+            connection.execute(
+                "DELETE FROM memory_vectors WHERE memory_id=?",
+                (memory_id,),
+            )
+        except sqlite3.OperationalError:
+            pass
+
+    @staticmethod
+    def _message_from_row(row: sqlite3.Row) -> MessageRecord:
+        return MessageRecord(
+            id=row["id"],
+            session_id=row["session_id"],
+            role=row["role"],
+            content=row["content"],
+            created_at=row["created_at"],
+            metadata=_json(row["metadata_json"], {}),
+        )
+
+    @staticmethod
+    def _summary_from_row(row: sqlite3.Row) -> ConversationSummaryRecord:
+        return ConversationSummaryRecord(
+            id=row["id"],
+            session_id=row["session_id"],
+            first_message_id=row["first_message_id"],
+            last_message_id=row["last_message_id"],
+            message_count=row["message_count"],
+            content=row["content"],
+            status=row["status"],
+            provider=row["provider"],
+            model=row["model"],
+            error_code=row["error_code"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+            deleted_at=row["deleted_at"],
         )
 
     @staticmethod

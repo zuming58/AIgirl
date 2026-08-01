@@ -103,6 +103,35 @@ export function toMemoryView(memory) {
   };
 }
 
+export const summaryStatusLabels = {
+  pending: "生成中",
+  ready: "可用",
+  failed: "生成失败",
+  unavailable: "模型未配置",
+};
+
+export const memoryIndexStatusLabels = {
+  ready: "就绪",
+  building: "重建中",
+  degraded: "已降级",
+  disabled: "未配置",
+};
+
+export function toSummaryView(summary) {
+  return {
+    id: summary.id,
+    sessionId: summary.session_id,
+    messageCount: summary.message_count,
+    content: summary.content,
+    status: summary.status,
+    statusLabel: summaryStatusLabels[summary.status] ?? summary.status,
+    model: summary.model || "未配置",
+    errorCode: summary.error_code,
+    updatedAt: summary.updated_at,
+    time: formatConversationTime(summary.updated_at),
+  };
+}
+
 export function toPlanView(plan) {
   const reminderText = plan.reminder_at ? "已设提醒" : "不提醒";
   return {

@@ -20,6 +20,13 @@ Environment variables:
 - `XINYU_LLM_BASE_URL`: optional OpenAI-compatible server, for example `http://127.0.0.1:8080/v1`.
 - `XINYU_LLM_MODEL`: model id sent to the compatible server.
 - `XINYU_LLM_API_KEY`: optional compatible-server token.
+- `XINYU_EMBEDDING_BASE_URL`: optional OpenAI-compatible `/v1` server.
+- `XINYU_EMBEDDING_MODEL`: embedding model id; defaults to `BAAI/bge-small-zh-v1.5`.
+- `XINYU_EMBEDDING_API_KEY`: optional embedding-server token.
 
 Without a configured LLM server, the API uses a clearly identified deterministic
 development provider so the entire persistence and UI path remains testable.
+That provider is never used to fabricate conversation summaries. Without a real
+LLM, summaries persist an honest `unavailable` state. Without an embedding
+server, memory queries continue through FTS5/LIKE. Vector data is derived and is
+not included in JSON exports.

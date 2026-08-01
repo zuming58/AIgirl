@@ -1,6 +1,6 @@
 # 实现状态矩阵
 
-更新日期：2026-07-31
+更新日期：2026-08-01
 
 状态定义：
 
@@ -15,7 +15,7 @@
 | --- | --- | --- | --- |
 | 16:9 陪伴主界面 | 已实现 | React UI、五页导航、人物居中、桌面本子/杯子/植物/台灯/照片墙；Vite 构建通过 | 组件化与无障碍细化 |
 | 对话 | 部分实现 | Core 持久化用户与助手消息；UI 刷新后恢复；开发回退 Provider 可替换 | 接入并基准测试本地 LLM |
-| 长期记忆 | 部分实现 | SQLite 结构化记忆、来源消息、“为什么记得”、置信度、FTS5、中文短查询回退、主动添加、编辑/置顶/删除；同槽冲突生成 supersedes 边，未确认推断 180 天过期 | 语义向量召回与摘要压缩 |
+| 长期记忆 | 已实现 | SQLite v2、来源追溯、纠错/置顶/软删除、FTS5 + sqlite-vec 加权 RRF、敏感过滤、索引重建与诚实降级；长对话摘要可见、可删除、可重建 | 在目标机完成真实中文 embedding 准确率和 10 万条性能验收 |
 | 计划 | 部分实现 | 计划完整 CRUD、完成状态持久化；可设置分类、时间与提前 15 分钟提醒；到点事件、安静时段和持久化未读提醒收件箱已验证 | Tauri 安装版系统通知验收 |
 | 心情 | 已实现 | 心情状态读写与 UI 切换 | 与语音韵律和人物表情联动 |
 | 设置与隐私 | 已实现 | 运行状态、记忆/主动陪伴开关、晚安心语、JSON 导入/导出、数据库快照/恢复、清除前自动备份与二次确认 | 细粒度敏感记忆策略 |
@@ -28,20 +28,21 @@
 | --- | --- | --- | --- |
 | Core API | 已实现 | FastAPI、Pydantic、SQLite WAL、迁移、回环监听、可选 Bearer Token | 无 |
 | LLM Provider | 部分实现 | `development-fallback` 与 OpenAI-compatible 适配器 | 模型/API 选择与下载 |
+| Embedding Provider | 部分实现 | OpenAI-compatible `/v1/embeddings`、默认 `BAAI/bge-small-zh-v1.5`、确定性测试替身；未配置时回退 FTS5/LIKE | 目标机下载许可确认与真实模型基准 |
 | 实时事件 | 部分实现 | `/v1/app/events` 事件信封；`/v1/realtime/voice` 已代理 Realtime 文本/二进制帧，前端处理增量转写、音频和插话状态 | 安装真实模型后做延迟与长时压力测试 |
 | STT / VAD | 部分实现 | speech-to-speech 独立进程配置、端口探测、真实 Realtime 代理、上游 AudioWorklet 客户端、显式麦克风权限/设备选择与最终转写持久化 | 模型档位与权重下载、真实声学验收 |
 | TTS | 部分实现 | 独立环境、真实 Realtime 代理、增量播放、插话清空和人物 speaking 状态已接通 | 内置声音验收；克隆声音需权利与同意 |
 | 动态人物 | 部分实现 | 高质量静态场景、独立 Avatar 状态机、状态事件、视频资产自动探测、安全媒体路由与前端淡入播放器；缺素材时诚实回退，明确不使用 2.5D | 角色参考资产、肖像许可、状态视频与口型模型下载 |
 | 桌面容器 | 部分实现 | Tauri 2 工程、品牌图标、无边框窗口、托盘、通知、开机启动与最小权限已落地；PyInstaller Core sidecar 自动构建并通过独立健康检查，桌面壳负责启动/退出 | 当前机器需安装 Rust 后编译安装包验收；系统权限需用户确认 |
-| 数据迁移 | 已实现 | `001_initial.sql` 与迁移记录表 | 发布前需补升级/回滚场景 |
+| 数据迁移 | 已实现 | `001_initial.sql`、`002_memory_intelligence.sql`、v1/v2 JSON 导入兼容；摘要导出、向量不导出 | 发布前补真实历史库升级与回滚演练 |
 
 ## 自动验证
 
 | 检查 | 当前结果 |
 | --- | --- |
-| Core API / Repository / Runtime | 35 项通过 |
-| Python 覆盖率 | 88% |
-| UI API 与领域映射 | 15 项通过 |
+| Core API / Repository / Runtime | 43 项通过 |
+| Python 覆盖率 | 85% |
+| UI API 与领域映射 | 17 项通过 |
 | Vite production build | 通过 |
 | 生产包 AudioWorklet 资产 | 2 项已注入并核对 |
 | Sites Worker | 4 项通过 |
@@ -64,9 +65,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\test.ps1
 
 ## 当前开发顺序
 
-1. 稳定数据层、设置、导出和真实 CRUD；
-2. 完成 UI 模块拆分、错误恢复与空状态；
-3. 安装候选模型并完成 speech-to-speech 延迟、回声与长时稳定性基准；
-4. 接入一套适配当前显卡的 STT / LLM / TTS 高质量档位；
-5. 建立人物状态视频与实时局部口型 Worker；
-6. 接入 Tauri 原生能力、备份、安装包和发布流程。
+1. 在 RTX 4070 Ti SUPER 目标机验证 `bge-small-zh-v1.5` 中文召回、10 万条索引重建、P95 延迟与内存；
+2. 安装候选模型并完成 STT、Qwen3 4B/8B、Qwen3-TTS 0.6B/1.7B 基准；
+3. 实现 ModelManager 和完整打断链路的长时稳定性验证；
+4. 建立人物状态视频与实时局部口型 Worker；
+5. 安装 Rust，完成 Tauri 安装包、系统通知和发布流程验收。

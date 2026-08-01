@@ -43,7 +43,7 @@ def test_plan_and_export(tmp_path: Path) -> None:
 
     assert repository.list_plans()[0].id == plan.id
     export = repository.export_data()
-    assert export.schema_version == 1
+    assert export.schema_version == 2
     assert any(item["id"] == plan.id for item in export.data["tasks"])
 
 

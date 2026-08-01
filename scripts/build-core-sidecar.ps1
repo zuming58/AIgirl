@@ -35,6 +35,7 @@ New-Item -ItemType Directory -Force -Path $workPath, $distPath, $specPath, $bina
     --paths $coreSource `
     --hidden-import "xinyu_core.app" `
     --collect-submodules "xinyu_core" `
+    --collect-all "sqlite_vec" `
     --collect-all "uvicorn" `
     --add-data "$migrationDirectory;xinyu_core/migrations" `
     --workpath $workPath `

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowRight,
+  ArrowClockwise,
   Bell,
   BookOpen,
   Brain,
@@ -43,12 +44,14 @@ import {
   formatConversationTime,
   formatClock,
   formatShortDate,
+  memoryIndexStatusLabels,
   profileLabels,
   toMessageView,
   toMemoryView,
   toPlanView,
 } from "./domain/viewModels.js";
 import { coreApi, createEventSocket } from "./services/coreApi.js";
+import { memoryWorkspace } from "./services/memoryWorkspace.js";
 import {
   desktopBridge,
   isDesktopRuntime,
@@ -277,6 +280,11 @@ export function App() {
     useState(false);
   const [isConversationLoading, setIsConversationLoading] = useState(false);
   const [memories, setMemories] = useState(initialMemories);
+  const [memoryMode, setMemoryMode] = useState("memories");
+  const [conversationSummaries, setConversationSummaries] = useState([]);
+  const [memoryIndex, setMemoryIndex] = useState(null);
+  const [memoryWorkspaceBusy, setMemoryWorkspaceBusy] = useState(false);
+  const [memoryWorkspaceMessage, setMemoryWorkspaceMessage] = useState("");
   const [memoryFilter, setMemoryFilter] = useState("全部");
   const [memoryQuery, setMemoryQuery] = useState("");
   const [selectedMemoryId, setSelectedMemoryId] = useState(1);
@@ -381,6 +389,7 @@ export function App() {
         coreApi.listBackups(),
         sessionId ? coreApi.messages(sessionId) : Promise.resolve([]),
         coreApi.notifications(),
+        memoryWorkspace.load(),
       ]);
       if (cancelled) return;
       const valueAt = (index) =>
@@ -403,6 +412,7 @@ export function App() {
       const storedBackups = valueAt(9);
       const storedMessages = valueAt(10);
       const storedNotifications = valueAt(11);
+      const storedMemoryWorkspace = valueAt(12);
 
       if (runtime) setRuntimeStatus(runtime);
       if (capabilities) setSystemCapabilities(capabilities);
@@ -433,6 +443,10 @@ export function App() {
       }
       if (storedNotifications) {
         setNotifications(storedNotifications);
+      }
+      if (storedMemoryWorkspace) {
+        setMemoryIndex(storedMemoryWorkspace.index);
+        setConversationSummaries(storedMemoryWorkspace.summaries);
       }
       if (sessionId && storedMessages) {
         setConversation(storedMessages.map(toMessageView));
@@ -797,6 +811,56 @@ export function App() {
       setLastMessage("记忆保存失败，请在核心服务恢复后再试。");
       setLastMessageSource("系统");
     }
+  }
+
+  async function rebuildMemoryIndex() {
+    if (coreStatus !== "connected" || memoryWorkspaceBusy) return;
+    setMemoryWorkspaceBusy(true);
+    setMemoryWorkspaceMessage("");
+    try {
+      const status = await memoryWorkspace.rebuildIndex();
+      setMemoryIndex(status);
+      setMemoryWorkspaceMessage("语义索引重建已开始，关键词检索仍可正常使用。");
+    } catch {
+      setMemoryWorkspaceMessage("索引重建请求失败，当前会继续使用关键词检索。");
+    } finally {
+      setMemoryWorkspaceBusy(false);
+    }
+  }
+
+  async function rebuildConversationSummary(summary) {
+    if (memoryWorkspaceBusy) return;
+    setMemoryWorkspaceBusy(true);
+    setMemoryWorkspaceMessage("");
+    try {
+      const items = await memoryWorkspace.generateSummary(summary.sessionId);
+      setConversationSummaries(items);
+      setMemoryWorkspaceMessage("摘要生成任务已提交。");
+    } catch {
+      setMemoryWorkspaceMessage("摘要任务未能提交，请确认本地模型已配置。");
+    } finally {
+      setMemoryWorkspaceBusy(false);
+    }
+  }
+
+  async function deleteConversationSummary(id) {
+    if (memoryWorkspaceBusy) return;
+    setMemoryWorkspaceBusy(true);
+    setMemoryWorkspaceMessage("");
+    try {
+      const items = await memoryWorkspace.deleteSummary(id);
+      setConversationSummaries(items);
+      setMemoryWorkspaceMessage("摘要已删除，不再用于后续对话。");
+    } catch {
+      setMemoryWorkspaceMessage("摘要删除失败，当前内容保持不变。");
+    } finally {
+      setMemoryWorkspaceBusy(false);
+    }
+  }
+
+  async function generateCurrentSummary() {
+    if (!sessionId || memoryWorkspaceBusy) return;
+    await rebuildConversationSummary({ sessionId });
   }
 
   async function togglePlan(id) {
@@ -1795,21 +1859,56 @@ export function App() {
             </div>
             <div className="memory-heading-actions">
               <div className="memory-summary">
-                <strong>{memories.length}</strong>
-                <span>条长期记忆</span>
+                <strong>
+                  {memoryMode === "memories"
+                    ? memories.length
+                    : conversationSummaries.length}
+                </strong>
+                <span>
+                  {memoryMode === "memories" ? "条长期记忆" : "份对话摘要"}
+                </span>
               </div>
-              <button
-                type="button"
-                className="add-memory-button"
-                onClick={() => setIsAddingMemory((value) => !value)}
-              >
-                <Plus size={15} weight="bold" />
-                主动告诉她
-              </button>
+              {memoryMode === "memories" ? (
+                <button
+                  type="button"
+                  className="add-memory-button"
+                  onClick={() => setIsAddingMemory((value) => !value)}
+                >
+                  <Plus size={15} weight="bold" />
+                  主动告诉她
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="add-memory-button"
+                  onClick={generateCurrentSummary}
+                  disabled={!sessionId || memoryWorkspaceBusy}
+                >
+                  <ArrowClockwise size={15} weight="bold" />
+                  生成当前摘要
+                </button>
+              )}
             </div>
           </header>
 
-          {isAddingMemory && (
+          <div className="memory-segments" aria-label="回忆视图">
+            <button
+              type="button"
+              className={memoryMode === "memories" ? "active" : ""}
+              onClick={() => setMemoryMode("memories")}
+            >
+              长期记忆
+            </button>
+            <button
+              type="button"
+              className={memoryMode === "summaries" ? "active" : ""}
+              onClick={() => setMemoryMode("summaries")}
+            >
+              对话摘要
+            </button>
+          </div>
+
+          {memoryMode === "memories" && isAddingMemory && (
             <form className="quick-memory-form" onSubmit={addMemory}>
               <select
                 value={newMemory.kind}
@@ -1862,6 +1961,8 @@ export function App() {
             </form>
           )}
 
+          {memoryMode === "memories" && (
+            <>
           <div className="filter-row" aria-label="记忆筛选">
             {["全部", "点滴", "偏好", "在意", "约定"].map((filter) => (
               <button
@@ -2019,6 +2120,73 @@ export function App() {
               </aside>
             )}
           </div>
+            </>
+          )}
+
+          {memoryMode === "summaries" && (
+            <div className="summary-workspace">
+              {conversationSummaries.length > 0 ? (
+                <div className="summary-list">
+                  {conversationSummaries.map((summary) => (
+                    <article
+                      key={summary.id}
+                      className={`summary-entry status-${summary.status}`}
+                    >
+                      <header>
+                        <span>
+                          <strong>{summary.time}</strong>
+                          <small>覆盖 {summary.messageCount} 条消息</small>
+                        </span>
+                        <em>{summary.statusLabel}</em>
+                      </header>
+                      <p>
+                        {summary.content ||
+                          (summary.status === "unavailable"
+                            ? "尚未配置真实对话模型，原始历史窗口仍会正常使用。"
+                            : summary.status === "failed"
+                              ? `摘要生成失败：${summary.errorCode || "未知错误"}`
+                              : "正在整理这段对话，完成后会在这里显示。")}
+                      </p>
+                      <footer>
+                        <span>模型：{summary.model}</span>
+                        <div>
+                          <button
+                            type="button"
+                            onClick={() => rebuildConversationSummary(summary)}
+                            disabled={memoryWorkspaceBusy}
+                          >
+                            <ArrowClockwise size={14} />
+                            重建
+                          </button>
+                          <button
+                            type="button"
+                            className="danger-action"
+                            onClick={() => deleteConversationSummary(summary.id)}
+                            disabled={memoryWorkspaceBusy}
+                          >
+                            <Trash size={14} />
+                            删除
+                          </button>
+                        </div>
+                      </footer>
+                    </article>
+                  ))}
+                </div>
+              ) : (
+                <div className="summary-empty">
+                  <BookOpen size={30} weight="duotone" />
+                  <strong>还没有对话摘要</strong>
+                  <span>长对话达到阈值后会在后台整理；也可以手动生成当前会话。</span>
+                  {!sessionId && <small>先开始一段对话，才能生成摘要。</small>}
+                </div>
+              )}
+              {memoryWorkspaceMessage && (
+                <p className="memory-workspace-message" role="status">
+                  {memoryWorkspaceMessage}
+                </p>
+              )}
+            </div>
+          )}
         </section>
       )}
 
@@ -2326,6 +2494,35 @@ export function App() {
                     <em className="component-unavailable">连接中</em>
                   </div>
                 )}
+              </div>
+              <div className="memory-index-status">
+                <span>
+                  <Brain size={17} weight="duotone" />
+                  <span>
+                    <strong>语义记忆索引</strong>
+                    <small>{memoryIndex?.model ?? "BAAI/bge-small-zh-v1.5"}</small>
+                  </span>
+                </span>
+                <div>
+                  <span>
+                    已索引 {memoryIndex?.indexed_count ?? 0} · 待处理{" "}
+                    {memoryIndex?.pending_count ?? memories.length}
+                  </span>
+                  <em className={`component-${memoryIndex?.status ?? "disabled"}`}>
+                    {memoryIndexStatusLabels[memoryIndex?.status] ?? "读取中"}
+                  </em>
+                </div>
+                {memoryIndex?.last_error && (
+                  <small>最近状态：{memoryIndex.last_error}</small>
+                )}
+                <button
+                  type="button"
+                  onClick={rebuildMemoryIndex}
+                  disabled={memoryWorkspaceBusy || coreStatus !== "connected"}
+                >
+                  <ArrowClockwise size={14} />
+                  重建索引
+                </button>
               </div>
               <div className="microphone-settings">
                 <label htmlFor="voice-input-device">

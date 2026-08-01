@@ -7,6 +7,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
+try:
+    import sqlite_vec
+except ImportError:  # pragma: no cover - setup installs the extension
+    sqlite_vec = None
+
 
 def iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -47,6 +52,7 @@ class Database:
                     (version, iso_now()),
                 )
             self._seed(connection)
+            self._initialize_vector_index(connection)
             connection.execute(
                 """
                 DELETE FROM proactive_events
@@ -117,6 +123,14 @@ class Database:
     def connect(self) -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(self.path, timeout=15)
         connection.row_factory = sqlite3.Row
+        if sqlite_vec is not None:
+            try:
+                connection.enable_load_extension(True)
+                sqlite_vec.load(connection)
+            except (sqlite3.Error, OSError):
+                pass
+            finally:
+                connection.enable_load_extension(False)
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA busy_timeout = 5000")
         try:
@@ -127,6 +141,22 @@ class Database:
             raise
         finally:
             connection.close()
+
+    @staticmethod
+    def _initialize_vector_index(connection: sqlite3.Connection) -> None:
+        if sqlite_vec is None:
+            return
+        try:
+            connection.execute(
+                """
+                CREATE VIRTUAL TABLE IF NOT EXISTS memory_vectors USING vec0(
+                    memory_id TEXT PRIMARY KEY,
+                    embedding FLOAT[512]
+                )
+                """
+            )
+        except sqlite3.OperationalError:
+            pass
 
     def ping(self) -> bool:
         try:

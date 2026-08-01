@@ -45,6 +45,35 @@ test("returns null for successful no-content mutations", async () => {
   assert.equal(await coreApi.deletePlan("plan id"), null);
 });
 
+test("uses stable memory intelligence endpoint contracts", async () => {
+  const requests = [];
+  globalThis.fetch = async (url, options = {}) => {
+    requests.push({ url, method: options.method ?? "GET" });
+    if (String(url).includes("conversation-summaries?")) {
+      return jsonResponse({ items: [], total: 0 });
+    }
+    if (options.method === "DELETE") return new Response(null, { status: 204 });
+    return jsonResponse({ status: "building", pending_count: 2 });
+  };
+
+  await coreApi.memoryIndexStatus();
+  await coreApi.rebuildMemoryIndex();
+  await coreApi.conversationSummaries("session 1");
+  await coreApi.generateConversationSummary("session 1");
+  await coreApi.deleteConversationSummary("summary 1");
+
+  assert.deepEqual(requests, [
+    { url: "/core/v1/memories/index/status", method: "GET" },
+    { url: "/core/v1/memories/index/rebuild", method: "POST" },
+    {
+      url: "/core/v1/conversation-summaries?limit=50&offset=0&session_id=session+1",
+      method: "GET",
+    },
+    { url: "/core/v1/conversations/session%201/summaries", method: "POST" },
+    { url: "/core/v1/conversation-summaries/summary%201", method: "DELETE" },
+  ]);
+});
+
 test("requests the privacy-safe diagnostics endpoint", async () => {
   let capturedUrl;
   globalThis.fetch = async (url) => {

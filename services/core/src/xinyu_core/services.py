@@ -13,8 +13,10 @@ from .contracts import (
     VoiceTranscriptCreate,
 )
 from .events import EventHub
+from .memory_intelligence import MemoryIntelligenceService
 from .providers import ChatProvider, DevelopmentCompanionProvider
 from .repository import Repository
+from .summaries import ConversationSummaryService
 
 
 class MemoryCandidateExtractor:
@@ -55,10 +57,14 @@ class ChatService:
         repository: Repository,
         provider: ChatProvider,
         events: EventHub,
+        memory_intelligence: MemoryIntelligenceService,
+        summaries: ConversationSummaryService,
     ) -> None:
         self.repository = repository
         self.provider = provider
         self.events = events
+        self.memory_intelligence = memory_intelligence
+        self.summaries = summaries
         self.extractor = MemoryCandidateExtractor()
 
     async def persist_voice_transcript(
@@ -102,6 +108,7 @@ class ChatService:
         if value.role == "user" and memory_enabled:
             for candidate in self.extractor.extract(value.content, message.id):
                 memory = self.repository.create_memory(candidate)
+                self.memory_intelligence.schedule_memory(memory.id)
                 await self.events.publish(
                     EventEnvelope(
                         type="memory.committed",
@@ -113,6 +120,7 @@ class ChatService:
                         },
                     )
                 )
+        self.summaries.maybe_schedule(session_id)
         return message
 
     async def chat(self, request: ChatRequest) -> ChatResponse:
@@ -131,10 +139,11 @@ class ChatService:
                 payload={"text": request.message, "channel": request.channel},
             )
         )
-        history = self.repository.list_messages(session_id, 24)
-        memories = self.repository.query_memories(
+        history = self.repository.list_messages(session_id, 13)
+        memories = await self.memory_intelligence.query(
             MemoryQuery(query=request.message, limit=5)
         )
+        summary = self.repository.active_summary(session_id)
         persona = self.repository.active_persona()
         provider_id = self.provider.id
         try:
@@ -143,6 +152,7 @@ class ChatService:
                 history[:-1],
                 persona,
                 [memory.content for memory in memories],
+                summary.content if summary else None,
             )
         except Exception as provider_error:
             if isinstance(self.provider, DevelopmentCompanionProvider):
@@ -154,6 +164,7 @@ class ChatService:
                 history[:-1],
                 persona,
                 [memory.content for memory in memories],
+                summary.content if summary else None,
             )
             provider_id = fallback.id
             self.repository.set_model_status(
@@ -194,6 +205,7 @@ class ChatService:
                 request.message, user_message.id
             ):
                 memory = self.repository.create_memory(candidate)
+                self.memory_intelligence.schedule_memory(memory.id)
                 candidate_ids.append(memory.id)
                 await self.events.publish(
                     EventEnvelope(
@@ -205,6 +217,7 @@ class ChatService:
                     )
                 )
         self.repository.complete_turn(turn_id)
+        self.summaries.maybe_schedule(session_id)
         await self.events.publish(
             EventEnvelope(
                 type="assistant.text.delta",

@@ -9,6 +9,7 @@ import {
   profileLabels,
   toMessageView,
   toMemoryView,
+  toSummaryView,
   toPlanView,
 } from "../src/domain/viewModels.js";
 
@@ -29,6 +30,23 @@ test("maps backend memories to user-managed presentation data", () => {
   assert.equal(view.source, "你主动告诉我 · 已确认");
   assert.equal(view.accent, "amber");
   assert.equal(view.starred, true);
+});
+
+test("maps conversation summaries without exposing private runtime details", () => {
+  const view = toSummaryView({
+    id: "summary-1",
+    session_id: "session-1",
+    message_count: 24,
+    content: "已确认的偏好与未解决话题。",
+    status: "ready",
+    model: "local-summary",
+    updated_at: "2026-08-01T12:30:00Z",
+  });
+
+  assert.equal(view.statusLabel, "可用");
+  assert.equal(view.messageCount, 24);
+  assert.equal(view.model, "local-summary");
+  assert.equal(view.content, "已确认的偏好与未解决话题。");
 });
 
 test("maps plans without a due time to a stable local view", () => {

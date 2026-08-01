@@ -13,7 +13,8 @@
 - 可多选本机歌单的真实音乐播放器、语音输入胶囊、心情状态、点滴卡片和明日清单
 - 水晶心 Logo 与心跳动效
 - 对话、可追溯结构化记忆、可编辑计划、到点提醒、心情和设置的本地 SQLite 持久化
-- 可替换的对话 Provider、运行状态页、JSON 导入导出、数据库快照/恢复与二次确认清除
+- 可替换的对话与 embedding Provider、FTS5 + sqlite-vec 混合召回、可管理的对话摘要
+- 运行状态页、JSON v1/v2 导入导出、数据库快照/恢复与二次确认清除
 - Tauri 托盘、通知、开机启动、品牌图标和自动封装的 Python Core sidecar
 - 显式麦克风权限与设备选择、Realtime 双向语音代理、增量播放/插话状态和最终转写持久化
 - FastAPI / Repository 测试、Vite 构建和站点 Worker 测试
@@ -30,7 +31,7 @@
 | 桌面容器 | Tauri 2（已建立工程） | 无边框窗口、托盘、通知、开机启动与 Core sidecar |
 | 实时语音 | Hugging Face `speech-to-speech`（子模块） | VAD → STT → LLM → TTS 的低延迟流水线 |
 | 智能体服务 | Python 3.11 + FastAPI | 会话编排、Provider 路由、状态与事件管理 |
-| 长期记忆 | SQLite + FTS5（已实现基础链路） | 用户事实、事件、来源、纠错和检索 |
+| 长期记忆 | SQLite + FTS5 + sqlite-vec | 用户事实、来源、混合召回、摘要与用户管理 |
 | 本地模型 | 可插拔 STT / LLM / TTS（计划） | 根据显存和隐私需求切换模型 |
 | 动态人物 | 写实状态视频库 + LivePortrait + MuseTalk 局部口型 | 以高质量模式实现眨眼、呼吸、视线、表情与音画同步 |
 

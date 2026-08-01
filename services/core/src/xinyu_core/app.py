@@ -20,6 +20,8 @@ from .contracts import (
     BackupRecord,
     ConfirmAction,
     ConversationSummary,
+    ConversationSummaryList,
+    ConversationSummaryRecord,
     DataExport,
     DataImportRequest,
     DataImportResult,
@@ -28,6 +30,8 @@ from .contracts import (
     HealthResponse,
     MemoryCreate,
     MemoryContext,
+    MemoryIndexRebuildResponse,
+    MemoryIndexStatus,
     MemoryQuery,
     MemoryRecord,
     MemoryUpdate,
@@ -53,10 +57,13 @@ from .avatar import AvatarRuntime
 from .database import Database
 from .diagnostics import inspect_system
 from .events import EventHub
+from .embeddings import create_embedding_provider
+from .memory_intelligence import MemoryIntelligenceService
 from .providers import create_provider
 from .reminders import ReminderScheduler
 from .repository import Repository
 from .services import ChatService
+from .summaries import ConversationSummaryService, create_summary_provider
 from .speech import SpeechRuntime, relay_voice_messages
 
 
@@ -66,9 +73,21 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     repository = Repository(database)
     event_hub = EventHub()
     provider = create_provider(config)
+    embedding_provider = create_embedding_provider(config)
+    memory_intelligence = MemoryIntelligenceService(repository, embedding_provider)
+    summary_service = ConversationSummaryService(
+        repository,
+        create_summary_provider(config),
+    )
     speech_runtime = SpeechRuntime(config.speech_realtime_url)
     avatar_runtime = AvatarRuntime(config.data_dir)
-    chat_service = ChatService(repository, provider, event_hub)
+    chat_service = ChatService(
+        repository,
+        provider,
+        event_hub,
+        memory_intelligence,
+        summary_service,
+    )
     reminder_scheduler = ReminderScheduler(repository, event_hub)
     started_at = datetime.now(timezone.utc)
 
@@ -110,11 +129,21 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             },
         )
         repository.expire_stale_memories()
+        summary_service.recover_pending()
+        index_status = memory_intelligence.status()
+        if embedding_provider.configured and (
+            index_status.pending_count > 0
+            or index_status.status in {"degraded", "disabled"}
+            or index_status.model != embedding_provider.model
+        ):
+            memory_intelligence.rebuild()
         reminder_scheduler.start()
         try:
             yield
         finally:
             await reminder_scheduler.stop()
+            await memory_intelligence.close()
+            await summary_service.close()
 
     app = FastAPI(
         title="Xinyu Core API",
@@ -126,6 +155,8 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     app.state.repository = repository
     app.state.events = event_hub
     app.state.chat_service = chat_service
+    app.state.memory_intelligence = memory_intelligence
+    app.state.summary_service = summary_service
     app.state.reminder_scheduler = reminder_scheduler
     app.state.avatar_runtime = avatar_runtime
     app.add_middleware(
@@ -242,6 +273,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                 ),
                 "auth_token_configured": bool(config.auth_token),
                 "llm_configured": bool(config.llm_base_url),
+                "embedding_configured": bool(config.embedding_base_url),
                 "speech_configured": bool(config.speech_realtime_url),
                 "contains_private_content": False,
             },
@@ -337,6 +369,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         value: MemoryCreate, _: None = Depends(authorize)
     ) -> MemoryRecord:
         memory = repository.create_memory(value)
+        memory_intelligence.schedule_memory(memory.id)
         await event_hub.publish(
             EventEnvelope(
                 type="memory.committed",
@@ -346,10 +379,26 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         return memory
 
     @app.post("/v1/memories/query", response_model=list[MemoryRecord])
-    def query_memories(
+    async def query_memories(
         value: MemoryQuery, _: None = Depends(authorize)
     ) -> list[MemoryRecord]:
-        return repository.query_memories(value)
+        return await memory_intelligence.query(value)
+
+    @app.get("/v1/memories/index/status", response_model=MemoryIndexStatus)
+    def memory_index_status(
+        _: None = Depends(authorize),
+    ) -> MemoryIndexStatus:
+        return memory_intelligence.status()
+
+    @app.post(
+        "/v1/memories/index/rebuild",
+        response_model=MemoryIndexRebuildResponse,
+        status_code=202,
+    )
+    async def rebuild_memory_index(
+        _: None = Depends(authorize),
+    ) -> MemoryIndexRebuildResponse:
+        return memory_intelligence.rebuild()
 
     @app.get(
         "/v1/memories/{memory_id}/context",
@@ -373,6 +422,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         memory = repository.update_memory(memory_id, value)
         if not memory:
             raise HTTPException(status_code=404, detail="Memory not found")
+        memory_intelligence.schedule_memory(memory.id)
         await event_hub.publish(
             EventEnvelope(
                 type="memory.committed",
@@ -380,6 +430,50 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             )
         )
         return memory
+
+    @app.get(
+        "/v1/conversation-summaries",
+        response_model=ConversationSummaryList,
+    )
+    def conversation_summaries(
+        session_id: str | None = Query(default=None),
+        limit: int = Query(default=50, ge=1, le=200),
+        offset: int = Query(default=0, ge=0),
+        _: None = Depends(authorize),
+    ) -> ConversationSummaryList:
+        items, total = repository.list_summaries(
+            session_id=session_id,
+            limit=limit,
+            offset=offset,
+        )
+        return ConversationSummaryList(items=items, total=total)
+
+    @app.post(
+        "/v1/conversations/{session_id}/summaries",
+        response_model=ConversationSummaryRecord,
+        status_code=202,
+    )
+    async def generate_conversation_summary(
+        session_id: str,
+        _: None = Depends(authorize),
+    ) -> ConversationSummaryRecord:
+        if not repository.list_messages(session_id, 1):
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        try:
+            return summary_service.schedule(session_id, force=True)
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
+    @app.delete(
+        "/v1/conversation-summaries/{summary_id}",
+        status_code=204,
+    )
+    def delete_conversation_summary(
+        summary_id: str,
+        _: None = Depends(authorize),
+    ) -> None:
+        if not repository.delete_summary(summary_id):
+            raise HTTPException(status_code=404, detail="Summary not found")
 
     @app.delete("/v1/memories/{memory_id}", status_code=204)
     async def delete_memory(
@@ -584,6 +678,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             safety_backup=backup_record(safety_path),
             imported_at=datetime.now(timezone.utc),
         )
+        memory_intelligence.rebuild()
         await event_hub.publish(
             EventEnvelope(
                 type="runtime.ready",
