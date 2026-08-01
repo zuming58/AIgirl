@@ -96,6 +96,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\test.ps1
 ## 文档入口
 
 - [开发手册](docs/DEVELOPMENT.md)：从新电脑初始化到模块接入
+- [完整开发交接文档](完整开发交接文档.md)：给跨电脑接手开发者的单一入口、主机配置与下一阶段任务
 - [实现状态矩阵](docs/IMPLEMENTATION_STATUS.md)：已实现、部分实现、人工门和验证证据
 - [技术栈说明](docs/TECH_STACK.md)：当前实现、目标架构与替代方案
 - [本地实时语音运行时](docs/VOICE_RUNTIME.md)：speech-to-speech 隔离环境、启动与人工门
