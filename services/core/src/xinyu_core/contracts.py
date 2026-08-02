@@ -40,10 +40,27 @@ class RuntimeComponent(ApiModel):
     required: bool = False
 
 
+class ModelRuntimeBudget(ApiModel):
+    gpu_budget_mb: int = Field(ge=0)
+    llm_max_mb: int = Field(ge=0)
+    stt_max_mb: int = Field(ge=0)
+    tts_max_mb: int = Field(ge=0)
+    avatar_max_mb: int = Field(ge=0)
+
+
+class ModelRuntimePlan(ApiModel):
+    profile: Literal["quality_local", "quality_cloud_llm", "safe_fallback"]
+    status: Literal["ready", "degraded"]
+    budget: ModelRuntimeBudget
+    validation_errors: list[str] = Field(default_factory=list)
+    components: list[RuntimeComponent]
+
+
 class RuntimeStatus(ApiModel):
     status: Literal["ready", "degraded"]
     started_at: datetime
     components: list[RuntimeComponent]
+    model_plan: ModelRuntimePlan
 
 
 AvatarState = Literal[

@@ -68,6 +68,23 @@ powershell -ExecutionPolicy Bypass -File .\scripts\setup-voice.ps1 -ConfirmLarge
 
 该脚本只安装隔离环境和程序依赖，不主动下载 STT / TTS 权重。首次真正启动所选模型时，上游运行时可能下载权重。
 
+## 运行档位与模型配置
+
+Core 的 `ModelManager` 只校验已配置的模型服务和目标机资源，不会下载权重、启动
+模型进程或把不可达服务标记为可用。通过以下环境变量让 Core 与语音启动参数保持一致：
+
+```powershell
+$env:XINYU_RUNTIME_PROFILE = "quality_local"
+$env:XINYU_STT_MODEL = "large-v3-turbo"
+$env:XINYU_TTS_MODEL = "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
+```
+
+- `safe_fallback`：默认开发档，不要求语音或模型，运行状态会明确显示降级。
+- `quality_local`：面向 16GB 目标机的本地档；需要 LLM 和语音 Realtime 地址，TTS 固定 0.6B 预算。
+- `quality_cloud_llm`：仍要求外部 OpenAI-compatible LLM 地址，但可在人工基准后尝试 1.7B TTS；不得在实时口型同时常驻时宣称满足 16GB 预算。
+
+`GET /v1/runtime/status` 返回不含地址、路径和密钥的 `model_plan`，包括档位、显存预算、组件状态和稳定错误码。模型服务断开后，文本功能和记忆功能继续可用。
+
 ## 启动
 
 先启动一个 OpenAI-compatible 本地 LLM 服务，例如监听 `http://127.0.0.1:8080/v1`，再运行：
@@ -76,6 +93,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\setup-voice.ps1 -ConfirmLarge
 powershell -ExecutionPolicy Bypass -File .\scripts\start-voice.ps1 `
   -LlmBaseUrl "http://127.0.0.1:8080/v1" `
   -LlmModel "<本地服务中的模型 ID>" `
+  -TtsModel "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice" `
   -Speaker "<验收后的内置声音>"
 ```
 

@@ -27,6 +27,9 @@ class AppConfig:
     embedding_model: str = "BAAI/bge-small-zh-v1.5"
     embedding_api_key: str | None = None
     speech_realtime_url: str | None = None
+    runtime_profile: str = "safe_fallback"
+    stt_model: str = "large-v3-turbo"
+    tts_model: str = "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
     app_version: str = "0.1.0"
 
     @classmethod
@@ -46,4 +49,10 @@ class AppConfig:
             ),
             embedding_api_key=os.getenv("XINYU_EMBEDDING_API_KEY") or None,
             speech_realtime_url=os.getenv("XINYU_SPEECH_REALTIME_URL") or None,
+            runtime_profile=os.getenv("XINYU_RUNTIME_PROFILE", "safe_fallback"),
+            stt_model=os.getenv("XINYU_STT_MODEL", "large-v3-turbo"),
+            tts_model=os.getenv(
+                "XINYU_TTS_MODEL",
+                "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+            ),
         )

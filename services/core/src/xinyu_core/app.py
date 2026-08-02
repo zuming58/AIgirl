@@ -45,7 +45,6 @@ from .contracts import (
     PlanCreate,
     PlanRecord,
     PlanUpdate,
-    RuntimeComponent,
     RuntimeStatus,
     RestoreResult,
     SettingUpdate,
@@ -59,6 +58,7 @@ from .diagnostics import inspect_system
 from .events import EventHub
 from .embeddings import create_embedding_provider
 from .memory_intelligence import MemoryIntelligenceService
+from .model_manager import ModelManager
 from .providers import create_provider
 from .reminders import ReminderScheduler
 from .repository import Repository
@@ -81,6 +81,12 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     )
     speech_runtime = SpeechRuntime(config.speech_realtime_url)
     avatar_runtime = AvatarRuntime(config.data_dir)
+    model_manager = ModelManager(
+        config,
+        inspect_system(),
+        speech_runtime,
+        avatar_runtime,
+    )
     chat_service = ChatService(
         repository,
         provider,
@@ -94,26 +100,14 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         database.initialize()
-        repository.set_model_status(
-            "llm-local",
-            provider.id,
-            "ready" if config.llm_base_url else "degraded",
-            {
-                "configured": bool(config.llm_base_url),
-                "model": config.llm_model,
-            },
-        )
-        speech_status = speech_runtime.status()
-        for model_id in ("stt-local", "tts-local"):
+        for model_id, (provider_id, status, metadata) in (
+            model_manager.model_metadata().items()
+        ):
             repository.set_model_status(
                 model_id,
-                "speech-to-speech",
-                "ready" if speech_status.reachable else "unavailable",
-                {
-                    "configured": speech_status.configured,
-                    "endpoint": speech_status.endpoint,
-                    "detail": speech_status.detail,
-                },
+                provider_id,
+                status,
+                metadata,
             )
         avatar_status = avatar_runtime.status()
         repository.set_model_status(
@@ -159,6 +153,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     app.state.summary_service = summary_service
     app.state.reminder_scheduler = reminder_scheduler
     app.state.avatar_runtime = avatar_runtime
+    app.state.model_manager = model_manager
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[
@@ -212,31 +207,16 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         return inspect_system()
 
     def current_runtime_status() -> RuntimeStatus:
-        models = repository.list_models()
-        components = [
-            RuntimeComponent(
-                id=item["id"],
-                kind=item["kind"],
-                status=item["status"],
-                detail=(
-                    item["metadata"].get("detail")
-                    or (
-                        "本地组件已就绪"
-                        if item["status"] == "ready"
-                        else "组件接口已建立，等待模型或运行时安装"
-                    )
-                ),
-                required=item["required"],
-            )
-            for item in models
-        ]
+        plan = model_manager.plan()
+        components = plan.components
         degraded = any(
             item.required and item.status != "ready" for item in components
-        )
+        ) or plan.status != "ready"
         return RuntimeStatus(
             status="degraded" if degraded else "ready",
             started_at=started_at,
             components=components,
+            model_plan=plan,
         )
 
     @app.get("/v1/diagnostics", response_model=DiagnosticReport)

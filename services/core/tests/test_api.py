@@ -47,6 +47,10 @@ def test_health_runtime_and_models(tmp_path: Path) -> None:
         runtime = client.get("/v1/runtime/status").json()
         assert runtime["status"] == "degraded"
         assert any(item["kind"] == "llm" for item in runtime["components"])
+        assert runtime["model_plan"]["profile"] == "safe_fallback"
+        assert runtime["model_plan"]["validation_errors"] == [
+            "safe_fallback_active"
+        ]
         capabilities = client.get("/v1/system/capabilities").json()
         assert capabilities["logical_cores"] >= 1
         assert capabilities["recommended_profile"] in {
