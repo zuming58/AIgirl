@@ -54,6 +54,23 @@ class ModelRuntimePlan(ApiModel):
     budget: ModelRuntimeBudget
     validation_errors: list[str] = Field(default_factory=list)
     components: list[RuntimeComponent]
+    health_checked_at: datetime | None = None
+    processes: list["ModelProcessStatus"] = Field(default_factory=list)
+
+
+class ModelProcessStatus(ApiModel):
+    id: str
+    state: Literal[
+        "unregistered",
+        "starting",
+        "running",
+        "stopping",
+        "stopped",
+        "failed",
+    ]
+    pid: int | None = None
+    restart_count: int = Field(default=0, ge=0)
+    last_error: str | None = None
 
 
 class RuntimeStatus(ApiModel):
@@ -318,6 +335,16 @@ class VoiceSessionResponse(ApiModel):
     endpoint: str
     provider: str
     detail: str
+    latency_metrics: "VoiceLatencyMetrics" = Field(default_factory=lambda: VoiceLatencyMetrics())
+
+
+class VoiceLatencyMetrics(ApiModel):
+    vad_ms: float | None = Field(default=None, ge=0)
+    final_transcript_ms: float | None = Field(default=None, ge=0)
+    first_token_ms: float | None = Field(default=None, ge=0)
+    first_audio_ms: float | None = Field(default=None, ge=0)
+    complete_ms: float | None = Field(default=None, ge=0)
+    interruptions: int = Field(default=0, ge=0)
 
 
 class VoiceTranscriptCreate(ApiModel):

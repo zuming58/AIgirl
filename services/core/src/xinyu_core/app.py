@@ -58,13 +58,13 @@ from .diagnostics import inspect_system
 from .events import EventHub
 from .embeddings import create_embedding_provider
 from .memory_intelligence import MemoryIntelligenceService
-from .model_manager import ModelManager
+from .model_manager import ModelManager, ModelProcessSupervisor, ProcessEvent
 from .providers import create_provider
 from .reminders import ReminderScheduler
 from .repository import Repository
 from .services import ChatService
 from .summaries import ConversationSummaryService, create_summary_provider
-from .speech import SpeechRuntime, relay_voice_messages
+from .speech import SpeechRuntime, VoiceLatencyTracker, relay_voice_messages
 
 
 def create_app(config: AppConfig | None = None) -> FastAPI:
@@ -81,11 +81,25 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     )
     speech_runtime = SpeechRuntime(config.speech_realtime_url)
     avatar_runtime = AvatarRuntime(config.data_dir)
+
+    async def publish_process_event(event: ProcessEvent) -> None:
+        await event_hub.publish(
+            EventEnvelope(
+                type="runtime.process.changed",
+                payload={
+                    "model_id": event.model_id,
+                    "state": event.state,
+                    "detail": event.detail,
+                },
+            )
+        )
+
     model_manager = ModelManager(
         config,
         inspect_system(),
         speech_runtime,
         avatar_runtime,
+        process_supervisor=ModelProcessSupervisor(event_sink=publish_process_event),
     )
     chat_service = ChatService(
         repository,
@@ -136,6 +150,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             yield
         finally:
             await reminder_scheduler.stop()
+            await model_manager.stop_all_processes()
             await memory_intelligence.close()
             await summary_service.close()
 
@@ -758,11 +773,31 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                 ).model_dump(mode="json")
             )
             try:
+                latency_tracker = VoiceLatencyTracker()
+
+                async def publish_latency(
+                    event_type: str, metrics
+                ) -> None:
+                    await event_hub.publish(
+                        EventEnvelope(
+                            type="voice.latency",
+                            payload={
+                                "event": event_type,
+                                "metrics": metrics.model_dump(mode="json"),
+                            },
+                        )
+                    )
+
                 async with websocket_connect(
                     speech_status.endpoint,
                     max_size=None,
                 ) as upstream:
-                    await relay_voice_messages(websocket, upstream)
+                    await relay_voice_messages(
+                        websocket,
+                        upstream,
+                        on_event=publish_latency,
+                        tracker=latency_tracker,
+                    )
             except WebSocketDisconnect:
                 return
             except Exception as error:

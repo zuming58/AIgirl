@@ -1,9 +1,11 @@
+import asyncio
 from pathlib import Path
 
 from xinyu_core.avatar import AvatarRuntime
 from xinyu_core.config import AppConfig
 from xinyu_core.contracts import GpuCapability, SystemCapabilities
 from xinyu_core.model_manager import ModelManager
+from xinyu_core.model_manager import ModelProcessSupervisor
 from xinyu_core.speech import SpeechRuntime
 
 
@@ -98,3 +100,88 @@ def test_quality_cloud_llm_requires_an_endpoint_but_allows_the_experiment_tts_ti
     assert "llm_not_configured" in plan.validation_errors
     assert "tts_model_exceeds_quality_local_budget" not in plan.validation_errors
     assert plan.budget.tts_max_mb == 5_000
+
+
+def test_llm_health_check_does_not_treat_a_configured_but_failed_endpoint_as_ready(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    class Response:
+        status_code = 503
+
+    class Client:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def get(self, *args, **kwargs):
+            return Response()
+
+    monkeypatch.setattr("xinyu_core.model_manager.httpx.Client", lambda **kwargs: Client())
+    manager = ModelManager(
+        config(tmp_path, runtime_profile="quality_cloud_llm", llm_base_url="http://127.0.0.1:8080/v1"),
+        capabilities(),
+        SpeechRuntime(None),
+        AvatarRuntime(tmp_path),
+    )
+
+    plan = manager.plan()
+
+    assert "llm_http_503" in plan.validation_errors
+    llm = next(item for item in plan.components if item.id == "llm-local")
+    assert llm.status == "degraded"
+
+
+def test_model_process_lifecycle_isolated_failure_and_restart() -> None:
+    class FakeProcess:
+        pid = 4321
+
+        def __init__(self) -> None:
+            self.returncode = None
+            self.exited = asyncio.Event()
+
+        def terminate(self) -> None:
+            self.returncode = 0
+            self.exited.set()
+
+        def kill(self) -> None:
+            self.returncode = -9
+            self.exited.set()
+
+        async def wait(self) -> int:
+            await self.exited.wait()
+            return self.returncode or 0
+
+    processes: list[FakeProcess] = []
+
+    async def factory(command):
+        process = FakeProcess()
+        processes.append(process)
+        return process
+
+    events = []
+
+    async def sink(event):
+        events.append((event.model_id, event.state, event.detail))
+
+    async def exercise():
+        supervisor = ModelProcessSupervisor(event_sink=sink)
+        supervisor.register("stt-local", ["fake-stt"], factory=factory)
+        started = await supervisor.start("stt-local")
+        assert started.state == "running"
+        processes[0].returncode = 17
+        processes[0].exited.set()
+        await asyncio.sleep(0.01)
+        failed = supervisor.statuses()[0]
+        assert failed.state == "failed"
+        assert failed.last_error == "process_exit:17"
+        restarted = await supervisor.restart("stt-local")
+        assert restarted.state == "running"
+        assert restarted.restart_count == 1
+        stopped = await supervisor.stop("stt-local")
+        assert stopped.state == "stopped"
+        assert any(state == "failed" for _, state, _ in events)
+
+    asyncio.run(exercise())

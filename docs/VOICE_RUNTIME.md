@@ -83,7 +83,16 @@ $env:XINYU_TTS_MODEL = "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
 - `quality_local`：面向 16GB 目标机的本地档；需要 LLM 和语音 Realtime 地址，TTS 固定 0.6B 预算。
 - `quality_cloud_llm`：仍要求外部 OpenAI-compatible LLM 地址，但可在人工基准后尝试 1.7B TTS；不得在实时口型同时常驻时宣称满足 16GB 预算。
 
-`GET /v1/runtime/status` 返回不含地址、路径和密钥的 `model_plan`，包括档位、显存预算、组件状态和稳定错误码。模型服务断开后，文本功能和记忆功能继续可用。
+`GET /v1/runtime/status` 返回不含地址、路径和密钥的 `model_plan`，包括档位、显存预算、组件状态、最近健康检查时间和稳定错误码。LLM 会请求 OpenAI-compatible `/models`，语音会执行 WebSocket `101` 握手；仅端口打开不会显示为 ready。模型服务断开后，文本功能和记忆功能继续可用。
+
+Core 还提供不依赖具体模型实现的进程生命周期接口。每个模型进程可以处于
+`starting / running / stopping / stopped / failed`，异常退出只标记自己的组件，调用方
+可以单独 `restart`；停止有超时和 kill 回退。开发机测试使用假进程，Core 不会因配置了模型
+ID 就自动拉取或启动权重。
+
+Realtime 代理保留上游文本和二进制帧，并在应用事件流发布 `voice.latency`：
+`vad_ms`、`final_transcript_ms`、`first_token_ms`、`first_audio_ms`、`complete_ms` 和
+`interruptions`。上游断线会发送可恢复错误，文字聊天、记忆和计划服务不受影响。
 
 ## 启动
 
