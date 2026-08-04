@@ -11,6 +11,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 from urllib.parse import urlparse
+from uuid import uuid4
 
 from .contracts import VoiceLatencyMetrics
 
@@ -107,17 +108,70 @@ class VoiceLatencyTracker:
     """Measure protocol milestones without retaining audio or message content."""
 
     started_at: float = 0.0
+    session_id: str | None = None
     _marks: dict[str, float] | None = None
     _interruptions: int = 0
+    _turn_interruptions: int = 0
+    _turn_id: str | None = None
+    _turn_started_at: float | None = None
+    _phase: str = "idle"
+    _response_started: bool = False
 
     def __post_init__(self) -> None:
         if self.started_at <= 0:
             self.started_at = time.perf_counter()
+        if self.session_id is None:
+            self.session_id = str(uuid4())
         if self._marks is None:
             self._marks = {}
 
-    def observe(self, event_type: str) -> bool:
-        now = time.perf_counter()
+    def _start_turn(self, now: float, phase: str) -> None:
+        self._turn_id = str(uuid4())
+        self._turn_started_at = now
+        self._marks = {}
+        self._turn_interruptions = 0
+        self._phase = phase
+        self._response_started = False
+
+    def _ensure_turn(self, now: float, phase: str) -> None:
+        if self._turn_id is None or self._phase == "terminal":
+            self._start_turn(now, phase)
+
+    def observe(
+        self,
+        event_type: str,
+        *,
+        source: str | None = None,
+        observed_at: float | None = None,
+    ) -> bool:
+        now = observed_at if observed_at is not None else time.perf_counter()
+
+        input_event = event_type in {
+            "input_audio_buffer.append",
+            "input_audio_buffer.commit",
+            "input_audio_buffer.speech_started",
+            "conversation.item.input_audio_transcription.completed",
+        }
+        if event_type == "conversation.item.create" and source == "client":
+            input_event = True
+        if input_event:
+            if self._phase == "response":
+                self._start_turn(now, "input")
+            else:
+                self._ensure_turn(now, "input")
+            self._phase = "input"
+        elif event_type == "response.created":
+            if self._phase == "response" and self._response_started:
+                self._start_turn(now, "response")
+            else:
+                self._ensure_turn(now, "response")
+            self._response_started = True
+            self._phase = "response"
+        elif event_type.startswith("response."):
+            self._ensure_turn(now, "response")
+            if self._phase != "terminal":
+                self._phase = "response"
+
         mark = {
             "input_audio_buffer.speech_started": "vad",
             "conversation.item.input_audio_transcription.completed": "final_transcript",
@@ -131,22 +185,30 @@ class VoiceLatencyTracker:
             self._marks[mark] = now
         if event_type in {"response.cancelled", "response.interrupted", "conversation.item.truncated"}:
             self._interruptions += 1
+            self._turn_interruptions += 1
             self._marks["interrupted"] = now
+            self._phase = "terminal"
+        elif event_type in {"response.done", "response.completed"}:
+            self._phase = "terminal"
         return mark is not None or event_type.startswith("response.")
 
     def snapshot(self) -> VoiceLatencyMetrics:
         def elapsed(name: str) -> float | None:
             value = self._marks.get(name)
-            if value is None:
+            if value is None or self._turn_started_at is None:
                 return None
-            return round((value - self.started_at) * 1000, 2)
+            return round(max(0.0, value - self._turn_started_at) * 1000, 2)
 
         return VoiceLatencyMetrics(
+            session_id=self.session_id,
+            turn_id=self._turn_id,
             vad_ms=elapsed("vad"),
             final_transcript_ms=elapsed("final_transcript"),
             first_token_ms=elapsed("first_token"),
             first_audio_ms=elapsed("first_audio"),
             complete_ms=elapsed("complete"),
+            interrupted_ms=elapsed("interrupted"),
+            turn_interruptions=self._turn_interruptions,
             interruptions=self._interruptions,
         )
 
@@ -169,7 +231,10 @@ async def relay_voice_messages(
         except (TypeError, ValueError):
             return
         event_type = payload.get("type")
-        if not isinstance(event_type, str) or not tracker.observe(event_type):
+        if not isinstance(event_type, str) or not tracker.observe(
+            event_type,
+            source=source,
+        ):
             return
         if on_event is not None:
             result = on_event(event_type, tracker.snapshot())

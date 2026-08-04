@@ -1,6 +1,6 @@
 # 本地实时语音运行时
 
-> 2026-08-04 状态：运行时生命周期增强位于 `agent/voice-runtime-integration` @ `c76b45f`，草稿 PR #2。该分支已增加模型进程 supervisor、协议握手检查和延迟事件，但多轮 WebSocket 会话的逐轮延迟 tracker 仍需修复，暂不合并。
+> 2026-08-04 状态：运行时生命周期增强位于 `agent/voice-runtime-integration`，草稿 PR #2。该分支已增加模型进程 supervisor、协议握手检查和逐轮延迟事件，仍需完成受控进程 API 与 Realtime 可靠性测试，暂不合并。
 
 心屿复用 Hugging Face `speech-to-speech` 的 OpenAI Realtime-compatible WebSocket，而不是重新实现一套私有音频协议。Core 通过 `XINYU_SPEECH_REALTIME_URL` 检测独立语音进程；语音进程崩溃不会拖垮文字对话、记忆和计划。
 
@@ -94,7 +94,10 @@ ID 就自动拉取或启动权重。
 
 Realtime 代理保留上游文本和二进制帧，并在应用事件流发布 `voice.latency`：
 `vad_ms`、`final_transcript_ms`、`first_token_ms`、`first_audio_ms`、`complete_ms` 和
-`interruptions`。上游断线会发送可恢复错误，文字聊天、记忆和计划服务不受影响。
+`interrupted_ms`。指标带有稳定的会话 ID 和逐轮 turn ID；`turn_interruptions` 是当前轮
+打断次数，`interruptions` 是会话累计打断次数。每轮新输入、插话或新响应都会清空上一轮
+里程碑，但不会保存音频或对话正文。上游断线会发送可恢复错误，文字聊天、记忆和计划服务
+不受影响。
 
 ## 启动
 

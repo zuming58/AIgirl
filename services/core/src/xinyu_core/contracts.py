@@ -339,11 +339,15 @@ class VoiceSessionResponse(ApiModel):
 
 
 class VoiceLatencyMetrics(ApiModel):
+    session_id: str | None = None
+    turn_id: str | None = None
     vad_ms: float | None = Field(default=None, ge=0)
     final_transcript_ms: float | None = Field(default=None, ge=0)
     first_token_ms: float | None = Field(default=None, ge=0)
     first_audio_ms: float | None = Field(default=None, ge=0)
     complete_ms: float | None = Field(default=None, ge=0)
+    interrupted_ms: float | None = Field(default=None, ge=0)
+    turn_interruptions: int = Field(default=0, ge=0)
     interruptions: int = Field(default=0, ge=0)
 
 

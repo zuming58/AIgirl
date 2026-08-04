@@ -76,26 +76,124 @@ def test_speech_runtime_requires_a_successful_websocket_handshake(monkeypatch) -
 
 
 def test_latency_tracker_records_protocol_milestones() -> None:
-    tracker = VoiceLatencyTracker(started_at=time.perf_counter() - 1)
+    started_at = time.perf_counter() - 1
+    tracker = VoiceLatencyTracker(started_at=started_at, session_id="session-1")
 
-    for event_type in (
-        "input_audio_buffer.speech_started",
-        "conversation.item.input_audio_transcription.completed",
-        "response.output_text.delta",
-        "response.audio.delta",
-        "response.done",
-        "response.cancelled",
+    for offset, event_type in enumerate(
+        (
+            "input_audio_buffer.speech_started",
+            "conversation.item.input_audio_transcription.completed",
+            "response.output_text.delta",
+            "response.audio.delta",
+            "response.cancelled",
+        )
     ):
-        tracker.observe(event_type)
+        tracker.observe(event_type, observed_at=started_at + offset * 0.1)
 
     metrics = tracker.snapshot()
 
+    assert metrics.session_id == "session-1"
+    assert metrics.turn_id is not None
     assert metrics.vad_ms is not None
     assert metrics.final_transcript_ms is not None
     assert metrics.first_token_ms is not None
     assert metrics.first_audio_ms is not None
-    assert metrics.complete_ms is not None
+    assert metrics.complete_ms is None
+    assert metrics.interrupted_ms == 400.0
+    assert metrics.turn_interruptions == 1
     assert metrics.interruptions == 1
+
+
+def test_latency_tracker_resets_metrics_for_each_turn() -> None:
+    tracker = VoiceLatencyTracker(started_at=10.0, session_id="session-1")
+
+    first_turn = (
+        ("input_audio_buffer.append", 10.0),
+        ("input_audio_buffer.speech_started", 10.1),
+        ("conversation.item.input_audio_transcription.completed", 10.2),
+        ("response.created", 10.3),
+        ("response.output_text.delta", 10.4),
+        ("response.audio.delta", 10.5),
+        ("response.done", 10.8),
+    )
+    for event_type, observed_at in first_turn:
+        tracker.observe(event_type, observed_at=observed_at)
+    first_metrics = tracker.snapshot()
+
+    second_turn = (
+        ("input_audio_buffer.append", 20.0),
+        ("input_audio_buffer.speech_started", 20.2),
+        ("conversation.item.input_audio_transcription.completed", 20.5),
+        ("response.created", 20.7),
+        ("response.output_text.delta", 21.1),
+        ("response.audio.delta", 21.4),
+        ("response.done", 22.0),
+    )
+    for event_type, observed_at in second_turn:
+        tracker.observe(event_type, observed_at=observed_at)
+    second_metrics = tracker.snapshot()
+
+    assert second_metrics.session_id == first_metrics.session_id
+    assert second_metrics.turn_id != first_metrics.turn_id
+    assert first_metrics.vad_ms == 100.0
+    assert first_metrics.first_token_ms == 400.0
+    assert second_metrics.vad_ms == 200.0
+    assert second_metrics.final_transcript_ms == 500.0
+    assert second_metrics.first_token_ms == 1100.0
+    assert second_metrics.first_audio_ms == 1400.0
+    assert second_metrics.complete_ms == 2000.0
+
+
+def test_latency_tracker_handles_text_only_out_of_order_and_cancelled_turns() -> None:
+    tracker = VoiceLatencyTracker(started_at=1.0, session_id="session-1")
+
+    tracker.observe("response.audio.delta", observed_at=2.0)
+    tracker.observe("response.output_text.delta", observed_at=2.1)
+    text_metrics = tracker.snapshot()
+    tracker.observe("response.cancelled", observed_at=2.2)
+    cancelled_metrics = tracker.snapshot()
+    tracker.observe("response.created", observed_at=3.0)
+    next_metrics = tracker.snapshot()
+
+    assert text_metrics.first_audio_ms == 0.0
+    assert text_metrics.first_token_ms == 100.0
+    assert cancelled_metrics.interrupted_ms == 200.0
+    assert cancelled_metrics.turn_interruptions == 1
+    assert cancelled_metrics.interruptions == 1
+    assert next_metrics.turn_id != cancelled_metrics.turn_id
+    assert next_metrics.first_audio_ms is None
+    assert next_metrics.first_token_ms is None
+    assert next_metrics.interruptions == 1
+    assert next_metrics.turn_interruptions == 0
+
+
+def test_latency_tracker_starts_a_new_turn_when_user_interrupts_response() -> None:
+    tracker = VoiceLatencyTracker(started_at=1.0, session_id="session-1")
+
+    tracker.observe("response.created", observed_at=2.0)
+    tracker.observe("response.audio.delta", observed_at=2.3)
+    response_metrics = tracker.snapshot()
+    tracker.observe("input_audio_buffer.append", observed_at=2.5)
+    tracker.observe("input_audio_buffer.speech_started", observed_at=2.6)
+    interruption_turn = tracker.snapshot()
+
+    assert interruption_turn.turn_id != response_metrics.turn_id
+    assert interruption_turn.first_audio_ms is None
+    assert interruption_turn.vad_ms == 100.0
+
+
+def test_latency_tracker_treats_a_second_response_created_as_a_new_turn() -> None:
+    tracker = VoiceLatencyTracker(started_at=1.0, session_id="session-1")
+
+    tracker.observe("response.created", observed_at=2.0)
+    tracker.observe("response.output_text.delta", observed_at=2.2)
+    first_turn = tracker.snapshot()
+    tracker.observe("response.created", observed_at=3.0)
+    second_turn = tracker.snapshot()
+
+    assert second_turn.turn_id != first_turn.turn_id
+    assert second_turn.first_token_ms is None
+    assert second_turn.interruptions == 0
 
 
 class FakeClientSocket:
