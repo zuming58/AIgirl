@@ -639,3 +639,19 @@ def test_notification_inbox_preserves_and_acknowledges_missed_reminders(
         assert acknowledged.status_code == 200
         assert acknowledged.json()["status"] == "acknowledged"
         assert client.get("/v1/notifications").json() == []
+
+
+def test_music_library_api_is_disabled_without_local_configuration(
+    tmp_path: Path,
+) -> None:
+    with make_client(tmp_path) as client:
+        library = client.get("/v1/music/library")
+        scanned = client.post("/v1/music/library/scan")
+        missing = client.get("/v1/music/tracks/unknown/audio")
+
+        assert library.status_code == 200
+        assert library.json()["status"]["status"] == "disabled"
+        assert library.json()["status"]["error_code"] == "music_library_not_configured"
+        assert scanned.json()["tracks"] == []
+        assert missing.status_code == 404
+        assert missing.json()["detail"]["code"] == "music_track_unavailable"

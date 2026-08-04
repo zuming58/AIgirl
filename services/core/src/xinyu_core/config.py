@@ -36,6 +36,24 @@ def _process_command(name: str) -> tuple[str, ...]:
     return tuple(command)
 
 
+def _directory_list(name: str) -> tuple[Path, ...]:
+    value = os.getenv(name)
+    if not value:
+        return ()
+    try:
+        directories = json.loads(value)
+    except json.JSONDecodeError:
+        return ()
+    if not isinstance(directories, list) or len(directories) > 16:
+        return ()
+    resolved: list[Path] = []
+    for item in directories:
+        if not isinstance(item, str) or not item.strip():
+            return ()
+        resolved.append(Path(item).expanduser().resolve())
+    return tuple(resolved)
+
+
 @dataclass(frozen=True, slots=True)
 class AppConfig:
     data_dir: Path
@@ -50,6 +68,7 @@ class AppConfig:
     speech_realtime_url: str | None = None
     llm_process_command: tuple[str, ...] = ()
     speech_process_command: tuple[str, ...] = ()
+    music_directories: tuple[Path, ...] = ()
     runtime_profile: str = "safe_fallback"
     stt_model: str = "large-v3-turbo"
     tts_model: str = "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
@@ -76,6 +95,7 @@ class AppConfig:
             speech_process_command=_process_command(
                 "XINYU_SPEECH_PROCESS_COMMAND_JSON"
             ),
+            music_directories=_directory_list("XINYU_MUSIC_DIRECTORIES_JSON"),
             runtime_profile=os.getenv("XINYU_RUNTIME_PROFILE", "safe_fallback"),
             stt_model=os.getenv("XINYU_STT_MODEL", "large-v3-turbo"),
             tts_model=os.getenv(

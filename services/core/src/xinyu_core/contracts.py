@@ -294,6 +294,31 @@ class NotificationRecord(ApiModel):
     created_at: datetime
 
 
+class MusicTrackRecord(ApiModel):
+    id: str
+    title: str
+    artist: str | None = None
+    album: str | None = None
+    duration_seconds: float | None = Field(default=None, ge=0)
+    status: Literal["available", "missing"]
+    cover_available: bool = False
+    recovery_hint: str | None = None
+
+
+class MusicLibraryStatus(ApiModel):
+    configured: bool
+    status: Literal["ready", "disabled", "degraded"]
+    track_count: int = Field(default=0, ge=0)
+    missing_count: int = Field(default=0, ge=0)
+    last_scan_at: datetime | None = None
+    error_code: str | None = None
+
+
+class MusicLibraryResponse(ApiModel):
+    status: MusicLibraryStatus
+    tracks: list[MusicTrackRecord] = Field(default_factory=list)
+
+
 class PersonaUpdate(ApiModel):
     name: str = Field(default="心屿", min_length=1, max_length=40)
     relationship_role: str = Field(default="companion", max_length=80)

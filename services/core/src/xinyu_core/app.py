@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -38,6 +39,7 @@ from .contracts import (
     MessageRecord,
     ModelRecord,
     ModelProcessStatus,
+    MusicLibraryResponse,
     MoodRecord,
     MoodUpdate,
     NotificationRecord,
@@ -59,6 +61,7 @@ from .diagnostics import inspect_system
 from .events import EventHub
 from .embeddings import create_embedding_provider
 from .memory_intelligence import MemoryIntelligenceService
+from .music import MusicLibrary
 from .model_manager import (
     ModelManager,
     ModelProcessNotRegistered,
@@ -87,6 +90,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     )
     speech_runtime = SpeechRuntime(config.speech_realtime_url)
     avatar_runtime = AvatarRuntime(config.data_dir)
+    music_library = MusicLibrary(database, config.music_directories)
 
     async def publish_process_event(event: ProcessEvent) -> None:
         await event_hub.publish(
@@ -185,6 +189,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     app.state.reminder_scheduler = reminder_scheduler
     app.state.avatar_runtime = avatar_runtime
     app.state.model_manager = model_manager
+    app.state.music_library = music_library
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[
@@ -346,6 +351,48 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     @app.get("/v1/models", response_model=list[ModelRecord])
     def models(_: None = Depends(authorize)) -> list[ModelRecord]:
         return [ModelRecord(**item) for item in repository.list_models()]
+
+    @app.get("/v1/music/library", response_model=MusicLibraryResponse)
+    def list_music_library(
+        _: None = Depends(authorize),
+    ) -> MusicLibraryResponse:
+        return music_library.list()
+
+    @app.post("/v1/music/library/scan", response_model=MusicLibraryResponse)
+    async def scan_music_library(
+        _: None = Depends(authorize),
+    ) -> MusicLibraryResponse:
+        result = await asyncio.to_thread(music_library.scan)
+        await event_hub.publish(
+            EventEnvelope(
+                type="music.library.scanned",
+                payload=result.status.model_dump(mode="json"),
+            )
+        )
+        return result
+
+    @app.get("/v1/music/tracks/{track_id}/audio")
+    def music_track_audio(
+        track_id: str,
+        token: str | None = Query(default=None),
+        authorization: str | None = Header(default=None),
+    ) -> FileResponse:
+        if config.auth_token and not (
+            authorization == f"Bearer {config.auth_token}"
+            or token == config.auth_token
+        ):
+            raise HTTPException(status_code=401, detail="Invalid local session token")
+        asset = music_library.audio_path(track_id)
+        if asset is None:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "music_track_unavailable"},
+            )
+        return FileResponse(
+            asset,
+            filename=asset.name,
+            content_disposition_type="inline",
+        )
 
     @app.get("/v1/avatar/status", response_model=AvatarStatus)
     def avatar_status(_: None = Depends(authorize)) -> AvatarStatus:

@@ -1318,6 +1318,9 @@ class Repository:
             for table in self.export_tables:
                 rows = connection.execute(f"SELECT * FROM {table}").fetchall()
                 output[table] = [dict(row) for row in rows]
+                if table == "media_assets":
+                    for item in output[table]:
+                        item["path"] = ""
             version = connection.execute(
                 "SELECT COALESCE(MAX(version), 0) FROM schema_migrations"
             ).fetchone()[0]

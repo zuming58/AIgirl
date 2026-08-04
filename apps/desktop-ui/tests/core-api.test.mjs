@@ -74,6 +74,27 @@ test("uses stable memory intelligence endpoint contracts", async () => {
   ]);
 });
 
+test("uses privacy-safe music library endpoint contracts", async () => {
+  const requests = [];
+  globalThis.window = { location: { origin: "http://127.0.0.1:4173" } };
+  globalThis.fetch = async (url, options = {}) => {
+    requests.push({ url, method: options.method ?? "GET" });
+    return jsonResponse({ status: { status: "ready" }, tracks: [] });
+  };
+
+  await coreApi.musicLibrary();
+  await coreApi.scanMusicLibrary();
+
+  assert.deepEqual(requests, [
+    { url: "/core/v1/music/library", method: "GET" },
+    { url: "/core/v1/music/library/scan", method: "POST" },
+  ]);
+  assert.equal(
+    coreApi.musicTrackUrl("track id"),
+    "http://127.0.0.1:4173/core/v1/music/tracks/track%20id/audio",
+  );
+});
+
 test("requests the privacy-safe diagnostics endpoint", async () => {
   let capturedUrl;
   globalThis.fetch = async (url) => {
