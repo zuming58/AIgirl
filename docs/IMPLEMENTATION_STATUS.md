@@ -1,6 +1,6 @@
 # 实现状态矩阵
 
-更新日期：2026-08-01
+更新日期：2026-08-04
 
 状态定义：
 
@@ -29,9 +29,10 @@
 | Core API | 已实现 | FastAPI、Pydantic、SQLite WAL、迁移、回环监听、可选 Bearer Token | 无 |
 | LLM Provider | 部分实现 | `development-fallback` 与 OpenAI-compatible 适配器 | 模型/API 选择与下载 |
 | Embedding Provider | 部分实现 | OpenAI-compatible `/v1/embeddings`、默认 `BAAI/bge-small-zh-v1.5`、确定性测试替身；未配置时回退 FTS5/LIKE | 目标机下载许可确认与真实模型基准 |
-| 实时事件 | 部分实现 | `/v1/app/events` 事件信封；`/v1/realtime/voice` 已代理 Realtime 文本/二进制帧，前端处理增量转写、音频和插话状态 | 安装真实模型后做延迟与长时压力测试 |
+| 实时事件 | 部分实现 | `/v1/app/events` 事件信封；`/v1/realtime/voice` 已代理 Realtime 文本/二进制帧；语音分支增加延迟事件与进程生命周期事件 | 先修多轮延迟 tracker，再安装真实模型做压力测试 |
 | STT / VAD | 部分实现 | speech-to-speech 独立进程配置、端口探测、真实 Realtime 代理、上游 AudioWorklet 客户端、显式麦克风权限/设备选择与最终转写持久化 | 模型档位与权重下载、真实声学验收 |
 | TTS | 部分实现 | 独立环境、真实 Realtime 代理、增量播放、插话清空和人物 speaking 状态已接通 | 内置声音验收；克隆声音需权利与同意 |
+| 模型进程管理 | 部分实现 | 集成分支有模型档位、预算和健康状态；语音分支增加 start/stop/restart/failure supervisor 与退出清理 | 并发锁、安全控制 API、真实进程配置、显存与长时稳定性 |
 | 动态人物 | 部分实现 | 高质量静态场景、独立 Avatar 状态机、状态事件、视频资产自动探测、安全媒体路由与前端淡入播放器；缺素材时诚实回退，明确不使用 2.5D | 角色参考资产、肖像许可、状态视频与口型模型下载 |
 | 桌面容器 | 部分实现 | Tauri 2 工程、品牌图标、无边框窗口、托盘、通知、开机启动与最小权限已落地；PyInstaller Core sidecar 自动构建并通过独立健康检查，桌面壳负责启动/退出 | 当前机器需安装 Rust 后编译安装包验收；系统权限需用户确认 |
 | 数据迁移 | 已实现 | `001_initial.sql`、`002_memory_intelligence.sql`、v1/v2 JSON 导入兼容；摘要导出、向量不导出 | 发布前补真实历史库升级与回滚演练 |
@@ -40,8 +41,8 @@
 
 | 检查 | 当前结果 |
 | --- | --- |
-| Core API / Repository / Runtime | 43 项通过 |
-| Python 覆盖率 | 85% |
+| Core API / Repository / Runtime | 2026-08-04 本机 45/46；1 个既有记忆语义检索失败 |
+| Python 覆盖率 | 最近完整绿灯记录 85% |
 | UI API 与领域映射 | 17 项通过 |
 | Vite production build | 通过 |
 | 生产包 AudioWorklet 资产 | 2 项已注入并核对 |
@@ -57,6 +58,8 @@
 | 设置页控制台错误 | 0 |
 | `git diff --check` | 通过 |
 
+UI 17/17、Sites 4/4 和 Vite 生产构建已于 2026-08-04 复跑通过。语音分支 `c76b45f` 的新增/相关测试 12/12 已在主电脑复跑通过，Core 全量为 50/51；唯一失败的记忆语义检索测试在父提交 `9791146` 上同样失败，因此作为既有基线/环境问题单独跟踪，不归因于语音提交。
+
 统一执行入口：
 
 ```powershell
@@ -65,8 +68,10 @@ powershell -ExecutionPolicy Bypass -File .\scripts\test.ps1
 
 ## 当前开发顺序
 
-1. 在 RTX 4070 Ti SUPER 目标机验证 `bge-small-zh-v1.5` 中文召回、10 万条索引重建、P95 延迟与内存；
-2. 安装候选模型并完成 STT、Qwen3 4B/8B、Qwen3-TTS 0.6B/1.7B 基准；
-3. 实现 ModelManager 和完整打断链路的长时稳定性验证；
-4. 建立人物状态视频与实时局部口型 Worker；
+1. 另一台电脑先修多轮延迟 tracker，并完成安全模型进程控制和语音断线/背压/插话测试；
+2. 主电脑验证 `bge-small-zh-v1.5` 中文召回、10 万条索引重建、P95 延迟与内存；
+3. 主电脑安装候选模型并完成 STT、Qwen3 4B/8B、Qwen3-TTS 0.6B/1.7B 基准；
+4. 主电脑确认人物身份后建立状态视频与实时局部口型 Worker；
 5. 安装 Rust，完成 Tauri 安装包、系统通知和发布流程验收。
+
+跨电脑分工和合并顺序见 [另一台电脑功能开发计划](OTHER_PC_FUNCTION_PLAN.md)。

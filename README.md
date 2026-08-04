@@ -71,8 +71,11 @@ AIgirl/
 ```powershell
 git clone --recurse-submodules https://github.com/zuming58/AIgirl.git
 cd AIgirl
+git switch --track origin/agent/xinyu-desktop-foundation
 .\scripts\setup.ps1
 ```
+
+`main` 目前仍是早期稳定基线；当前完整开发内容和交接资料位于 `agent/xinyu-desktop-foundation`。另一台电脑继续语音/runtime 时改为切换 `origin/agent/voice-runtime-integration`，并遵循 `docs/OTHER_PC_FUNCTION_PLAN.md`。
 
 如果普通克隆时忘记拉子模块：
 
@@ -98,6 +101,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\test.ps1
 
 - [开发手册](docs/DEVELOPMENT.md)：从新电脑初始化到模块接入
 - [完整开发交接文档](完整开发交接文档.md)：给跨电脑接手开发者的单一入口、主机配置与下一阶段任务
+- [另一台电脑功能开发计划](docs/OTHER_PC_FUNCTION_PLAN.md)：语音/runtime 分支、禁止范围、提交顺序、验收和合并办法
+- [交接资料清单](docs/MATERIALS_MANIFEST.md)：本机资料的 GitHub 位置、旧目录处理和隐私/构建排除项
 - [实现状态矩阵](docs/IMPLEMENTATION_STATUS.md)：已实现、部分实现、人工门和验证证据
 - [技术栈说明](docs/TECH_STACK.md)：当前实现、目标架构与替代方案
 - [本地实时语音运行时](docs/VOICE_RUNTIME.md)：speech-to-speech 隔离环境、启动与人工门

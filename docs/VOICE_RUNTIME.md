@@ -1,5 +1,7 @@
 # 本地实时语音运行时
 
+> 2026-08-04 状态：运行时生命周期增强位于 `agent/voice-runtime-integration` @ `c76b45f`，草稿 PR #2。该分支已增加模型进程 supervisor、协议握手检查和延迟事件，但多轮 WebSocket 会话的逐轮延迟 tracker 仍需修复，暂不合并。
+
 心屿复用 Hugging Face `speech-to-speech` 的 OpenAI Realtime-compatible WebSocket，而不是重新实现一套私有音频协议。Core 通过 `XINYU_SPEECH_REALTIME_URL` 检测独立语音进程；语音进程崩溃不会拖垮文字对话、记忆和计划。
 
 ## 当前已完成
@@ -134,3 +136,5 @@ powershell -ExecutionPolicy Bypass -File .\scripts\dev.ps1 -Open
 当前自动测试覆盖代理协议、降级、转写持久化和构建资产；完整的声学验收仍
 需要人工选择并下载模型后，在真实麦克风与扬声器上测量首包延迟、插话停止
 时间、回声和连续 30 分钟稳定性。没有这些结果时，文档不会宣称达到目标延迟。
+
+另一台电脑不需要下载大型模型即可继续完成 tracker、进程控制、假 WebSocket、断线、背压、插话和资源清理测试。完整任务见 [另一台电脑功能开发计划](OTHER_PC_FUNCTION_PLAN.md)。人物与场景不属于该分支。
