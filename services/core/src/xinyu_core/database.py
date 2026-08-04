@@ -240,6 +240,7 @@ class Database:
             "proactive.daily_limit": 2,
             "proactive.cooldown_minutes": 240,
             "proactive.inactivity_minutes": 240,
+            "proactive.timezone": "",
             "voice.enabled": False,
             "voice.input_device_id": "",
             "avatar.quality": "high",

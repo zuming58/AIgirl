@@ -4,6 +4,7 @@ import asyncio
 from contextlib import suppress
 from datetime import datetime, time, timezone
 from typing import Protocol
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .contracts import EventEnvelope
 from .repository import Repository
@@ -35,7 +36,11 @@ def _bounded_int(
     return max(minimum, min(maximum, parsed))
 
 
-def is_quiet_time(value: object, current: datetime) -> bool:
+def is_quiet_time(
+    value: object,
+    current: datetime,
+    timezone_name: object = None,
+) -> bool:
     if not isinstance(value, str) or "-" not in value:
         return False
     start_text, end_text = value.split("-", maxsplit=1)
@@ -43,7 +48,13 @@ def is_quiet_time(value: object, current: datetime) -> bool:
     end = _parse_clock(end_text)
     if start is None or end is None:
         return False
-    local_time = current.astimezone().time().replace(tzinfo=None)
+    local_zone = None
+    if isinstance(timezone_name, str) and timezone_name:
+        try:
+            local_zone = ZoneInfo(timezone_name)
+        except ZoneInfoNotFoundError:
+            local_zone = None
+    local_time = current.astimezone(local_zone).time().replace(tzinfo=None)
     if start <= end:
         return start <= local_time < end
     return local_time >= start or local_time < end
@@ -66,7 +77,11 @@ class ReminderScheduler:
         if not settings.get("privacy.proactive_enabled", True):
             return 0
         current = now or datetime.now(timezone.utc)
-        if is_quiet_time(settings.get("privacy.quiet_hours"), current):
+        if is_quiet_time(
+            settings.get("privacy.quiet_hours"),
+            current,
+            settings.get("proactive.timezone"),
+        ):
             return 0
 
         claimed = self.repository.claim_due_plan_reminders(current)
