@@ -18,8 +18,11 @@ FFmpeg、CUDA、Rust、STT / TTS / LLM 和人物模型不属于当前基础启�
 ```powershell
 git clone --recurse-submodules https://github.com/zuming58/AIgirl.git
 cd AIgirl
+git switch --track origin/agent/xinyu-desktop-foundation
 powershell -ExecutionPolicy Bypass -File .\scripts\setup.ps1
 ```
+
+当前完整集成基线不在早期 `main`，而在 `agent/xinyu-desktop-foundation`。另一台电脑继续语音和模型运行时时切换 `agent/voice-runtime-integration`，任务边界见 [另一台电脑功能开发计划](OTHER_PC_FUNCTION_PLAN.md)。
 
 初始化脚本会：
 
