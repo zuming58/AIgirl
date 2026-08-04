@@ -37,6 +37,7 @@ from .contracts import (
     MemoryUpdate,
     MessageRecord,
     ModelRecord,
+    ModelProcessStatus,
     MoodRecord,
     MoodUpdate,
     NotificationRecord,
@@ -58,7 +59,12 @@ from .diagnostics import inspect_system
 from .events import EventHub
 from .embeddings import create_embedding_provider
 from .memory_intelligence import MemoryIntelligenceService
-from .model_manager import ModelManager, ModelProcessSupervisor, ProcessEvent
+from .model_manager import (
+    ModelManager,
+    ModelProcessNotRegistered,
+    ModelProcessSupervisor,
+    ProcessEvent,
+)
 from .providers import create_provider
 from .reminders import ReminderScheduler
 from .repository import Repository
@@ -101,6 +107,16 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         avatar_runtime,
         process_supervisor=ModelProcessSupervisor(event_sink=publish_process_event),
     )
+    if config.llm_process_command:
+        model_manager.register_process(
+            "llm-local",
+            list(config.llm_process_command),
+        )
+    if config.speech_process_command:
+        model_manager.register_process(
+            "speech-runtime",
+            list(config.speech_process_command),
+        )
     chat_service = ChatService(
         repository,
         provider,
@@ -214,6 +230,59 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     @app.get("/v1/runtime/status", response_model=RuntimeStatus)
     def runtime_status(_: None = Depends(authorize)) -> RuntimeStatus:
         return current_runtime_status()
+
+    @app.get(
+        "/v1/models/processes",
+        response_model=list[ModelProcessStatus],
+    )
+    def model_processes(_: None = Depends(authorize)) -> list[ModelProcessStatus]:
+        return model_manager.process_supervisor.statuses()
+
+    async def operate_model_process(
+        component_id: str,
+        operation: str,
+    ) -> ModelProcessStatus:
+        try:
+            if operation == "start":
+                return await model_manager.start_process(component_id)
+            if operation == "stop":
+                return await model_manager.stop_process(component_id)
+            return await model_manager.restart_process(component_id)
+        except ModelProcessNotRegistered as error:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "model_process_not_registered"},
+            ) from error
+
+    @app.post(
+        "/v1/models/processes/{component_id}/start",
+        response_model=ModelProcessStatus,
+    )
+    async def start_model_process(
+        component_id: str,
+        _: None = Depends(authorize),
+    ) -> ModelProcessStatus:
+        return await operate_model_process(component_id, "start")
+
+    @app.post(
+        "/v1/models/processes/{component_id}/stop",
+        response_model=ModelProcessStatus,
+    )
+    async def stop_model_process(
+        component_id: str,
+        _: None = Depends(authorize),
+    ) -> ModelProcessStatus:
+        return await operate_model_process(component_id, "stop")
+
+    @app.post(
+        "/v1/models/processes/{component_id}/restart",
+        response_model=ModelProcessStatus,
+    )
+    async def restart_model_process(
+        component_id: str,
+        _: None = Depends(authorize),
+    ) -> ModelProcessStatus:
+        return await operate_model_process(component_id, "restart")
 
     @app.get("/v1/system/capabilities", response_model=SystemCapabilities)
     def system_capabilities(

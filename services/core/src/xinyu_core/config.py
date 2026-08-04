@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +16,26 @@ def _default_data_dir() -> Path:
     return Path.home() / ".xinyu"
 
 
+def _process_command(name: str) -> tuple[str, ...]:
+    """Read a local-only JSON argument array without invoking a shell."""
+    value = os.getenv(name)
+    if not value:
+        return ()
+    try:
+        command = json.loads(value)
+    except json.JSONDecodeError:
+        return ()
+    if (
+        not isinstance(command, list)
+        or not command
+        or len(command) > 64
+        or not all(isinstance(part, str) and part for part in command)
+        or sum(len(part) for part in command) > 8192
+    ):
+        return ()
+    return tuple(command)
+
+
 @dataclass(frozen=True, slots=True)
 class AppConfig:
     data_dir: Path
@@ -27,6 +48,8 @@ class AppConfig:
     embedding_model: str = "BAAI/bge-small-zh-v1.5"
     embedding_api_key: str | None = None
     speech_realtime_url: str | None = None
+    llm_process_command: tuple[str, ...] = ()
+    speech_process_command: tuple[str, ...] = ()
     runtime_profile: str = "safe_fallback"
     stt_model: str = "large-v3-turbo"
     tts_model: str = "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
@@ -49,6 +72,10 @@ class AppConfig:
             ),
             embedding_api_key=os.getenv("XINYU_EMBEDDING_API_KEY") or None,
             speech_realtime_url=os.getenv("XINYU_SPEECH_REALTIME_URL") or None,
+            llm_process_command=_process_command("XINYU_LLM_PROCESS_COMMAND_JSON"),
+            speech_process_command=_process_command(
+                "XINYU_SPEECH_PROCESS_COMMAND_JSON"
+            ),
             runtime_profile=os.getenv("XINYU_RUNTIME_PROFILE", "safe_fallback"),
             stt_model=os.getenv("XINYU_STT_MODEL", "large-v3-turbo"),
             tts_model=os.getenv(

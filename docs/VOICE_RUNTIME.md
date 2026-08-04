@@ -92,6 +92,26 @@ Core 还提供不依赖具体模型实现的进程生命周期接口。每个模
 可以单独 `restart`；停止有超时和 kill 回退。开发机测试使用假进程，Core 不会因配置了模型
 ID 就自动拉取或启动权重。
 
+可管理进程必须由本机环境提前注册，值是不会经过 shell 的 JSON 参数数组：
+
+```powershell
+$env:XINYU_LLM_PROCESS_COMMAND_JSON = '["C:\\xinyu\\llama-server.exe", "--model", "C:\\models\\companion.gguf"]'
+$env:XINYU_SPEECH_PROCESS_COMMAND_JSON = '["C:\\xinyu\\.venv-voice\\Scripts\\speech-to-speech.exe", "--port", "8766"]'
+```
+
+未配置时进程列表为空，Core 不会猜测可执行文件位置。HTTP 端只接受已注册的组件 ID，
+不接受任意命令字符串，也不会在状态、事件或错误中返回命令、文件路径和密钥：
+
+```text
+GET  /v1/models/processes
+POST /v1/models/processes/{component_id}/start
+POST /v1/models/processes/{component_id}/stop
+POST /v1/models/processes/{component_id}/restart
+```
+
+同一组件的操作按异步锁串行执行；重复 start/stop 幂等，并发 start 只会创建一个子进程。
+启动超时、异常退出和停止 kill 失败使用稳定错误码，其他组件与文字服务不受影响。
+
 Realtime 代理保留上游文本和二进制帧，并在应用事件流发布 `voice.latency`：
 `vad_ms`、`final_transcript_ms`、`first_token_ms`、`first_audio_ms`、`complete_ms` 和
 `interrupted_ms`。指标带有稳定的会话 ID 和逐轮 turn ID；`turn_interruptions` 是当前轮

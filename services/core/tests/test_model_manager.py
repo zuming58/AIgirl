@@ -5,6 +5,7 @@ from xinyu_core.avatar import AvatarRuntime
 from xinyu_core.config import AppConfig
 from xinyu_core.contracts import GpuCapability, SystemCapabilities
 from xinyu_core.model_manager import ModelManager
+from xinyu_core.model_manager import ModelProcessNotRegistered
 from xinyu_core.model_manager import ModelProcessSupervisor
 from xinyu_core.speech import SpeechRuntime
 
@@ -185,3 +186,131 @@ def test_model_process_lifecycle_isolated_failure_and_restart() -> None:
         assert any(state == "failed" for _, state, _ in events)
 
     asyncio.run(exercise())
+
+
+def test_model_process_concurrent_start_only_spawns_once() -> None:
+    class FakeProcess:
+        pid = 101
+
+        async def wait(self) -> int:
+            await asyncio.Future()
+
+        def terminate(self) -> None:
+            raise AssertionError("not stopped in this test")
+
+    calls = 0
+    release = asyncio.Event()
+
+    async def factory(command):
+        nonlocal calls
+        calls += 1
+        await release.wait()
+        return FakeProcess()
+
+    async def exercise():
+        supervisor = ModelProcessSupervisor()
+        supervisor.register("llm-local", ["local-test"], factory=factory)
+        first, second = asyncio.create_task(supervisor.start("llm-local")), asyncio.create_task(
+            supervisor.start("llm-local")
+        )
+        for _ in range(3):
+            await asyncio.sleep(0)
+        assert calls == 1
+        release.set()
+        statuses = await asyncio.gather(first, second)
+        assert calls == 1
+        assert all(status.state == "running" for status in statuses)
+        first.cancel()
+        second.cancel()
+
+    asyncio.run(exercise())
+
+
+def test_model_process_stop_timeout_uses_kill_fallback() -> None:
+    class FakeProcess:
+        pid = 202
+
+        def __init__(self) -> None:
+            self.killed = False
+
+        def terminate(self) -> None:
+            return None
+
+        def kill(self) -> None:
+            self.killed = True
+
+        async def wait(self) -> int:
+            if self.killed:
+                return -9
+            await asyncio.Future()
+
+    process = FakeProcess()
+
+    async def factory(command):
+        return process
+
+    async def exercise():
+        supervisor = ModelProcessSupervisor()
+        supervisor.register(
+            "speech-runtime",
+            ["local-test"],
+            factory=factory,
+            stop_timeout=0.01,
+        )
+        await supervisor.start("speech-runtime")
+        stopped = await supervisor.stop("speech-runtime")
+        assert process.killed is True
+        assert stopped.state == "stopped"
+        assert stopped.pid is None
+
+    asyncio.run(exercise())
+
+
+def test_model_process_start_timeout_has_stable_error_code() -> None:
+    async def factory(command):
+        await asyncio.Future()
+
+    async def exercise():
+        supervisor = ModelProcessSupervisor()
+        supervisor.register(
+            "llm-local",
+            ["local-test"],
+            factory=factory,
+            start_timeout=0.01,
+        )
+        status = await supervisor.start("llm-local")
+        assert status.state == "failed"
+        assert status.last_error == "process_start_timeout"
+        assert status.pid is None
+
+    asyncio.run(exercise())
+
+
+def test_model_process_unknown_id_has_stable_error() -> None:
+    async def exercise():
+        supervisor = ModelProcessSupervisor()
+        try:
+            await supervisor.start("not-registered")
+        except ModelProcessNotRegistered as error:
+            assert error.args == ("not-registered",)
+        else:
+            raise AssertionError("expected a stable unknown-process error")
+
+    asyncio.run(exercise())
+
+
+def test_process_command_env_accepts_only_json_argument_arrays(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("XINYU_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv(
+        "XINYU_LLM_PROCESS_COMMAND_JSON",
+        '["llama-server.exe", "--model", "companion.gguf"]',
+    )
+    monkeypatch.setenv("XINYU_SPEECH_PROCESS_COMMAND_JSON", "llama-server.exe --model unsafe")
+    configured = AppConfig.from_env()
+
+    assert configured.llm_process_command == (
+        "llama-server.exe",
+        "--model",
+        "companion.gguf",
+    )
+    assert configured.speech_process_command == ()

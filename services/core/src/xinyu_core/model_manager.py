@@ -99,6 +99,10 @@ ProcessFactory = Callable[[list[str]], Awaitable[Any]]
 ProcessEventSink = Callable[[ProcessEvent], Awaitable[None] | None]
 
 
+class ModelProcessNotRegistered(KeyError):
+    """Raised when an API asks for a process absent from local configuration."""
+
+
 async def _spawn_process(command: list[str]) -> Any:
     return await asyncio.create_subprocess_exec(
         *command,
@@ -118,18 +122,21 @@ class ManagedModelProcess:
         factory: ProcessFactory = _spawn_process,
         event_sink: ProcessEventSink | None = None,
         stop_timeout: float = 2.0,
+        start_timeout: float = 10.0,
     ) -> None:
         self.model_id = model_id
         self.command = command
         self.factory = factory
         self.event_sink = event_sink
         self.stop_timeout = stop_timeout
+        self.start_timeout = start_timeout
         self.state: ProcessState = "unregistered"
         self.pid: int | None = None
         self.restart_count = 0
         self.last_error: str | None = None
         self._process: Any | None = None
         self._watch_task: asyncio.Task[None] | None = None
+        self._lock = asyncio.Lock()
 
     def status(self) -> ModelProcessStatus:
         return ModelProcessStatus(
@@ -148,20 +155,33 @@ class ManagedModelProcess:
             await result
 
     async def start(self) -> ModelProcessStatus:
-        if self.state == "running":
+        async with self._lock:
+            return await self._start_locked()
+
+    async def _start_locked(self) -> ModelProcessStatus:
+        if self.state in {"starting", "running"}:
+            return self.status()
+        if self._process is not None:
             return self.status()
         self.state = "starting"
         self.last_error = None
         await self._emit()
         try:
-            self._process = await self.factory(self.command)
+            self._process = await asyncio.wait_for(
+                self.factory(self.command),
+                timeout=self.start_timeout,
+            )
             self.pid = getattr(self._process, "pid", None)
             self.state = "running"
             self._watch_task = asyncio.create_task(self._watch())
             await self._emit()
+        except asyncio.TimeoutError:
+            self.state = "failed"
+            self.last_error = "process_start_timeout"
+            await self._emit(self.last_error)
         except Exception as error:
             self.state = "failed"
-            self.last_error = f"start_failed:{type(error).__name__}"
+            self.last_error = f"process_start_failed:{type(error).__name__}"
             await self._emit(self.last_error)
         return self.status()
 
@@ -174,47 +194,82 @@ class ManagedModelProcess:
         except asyncio.CancelledError:
             return
         except Exception as error:
-            self.state = "failed"
-            self.last_error = f"wait_failed:{type(error).__name__}"
-            await self._emit(self.last_error)
+            async with self._lock:
+                if process is not self._process:
+                    return
+                self.state = "failed"
+                self.pid = None
+                self._process = None
+                self.last_error = f"process_wait_failed:{type(error).__name__}"
+                await self._emit(self.last_error)
             return
-        if self.state in {"stopping", "stopped"}:
-            return
-        if return_code == 0:
-            self.state = "stopped"
-            await self._emit("process_exited")
-        else:
-            self.state = "failed"
-            self.last_error = f"process_exit:{return_code}"
-            await self._emit(self.last_error)
+        async with self._lock:
+            if process is not self._process or self.state in {"stopping", "stopped"}:
+                return
+            self.pid = None
+            self._process = None
+            if return_code == 0:
+                self.state = "stopped"
+                await self._emit("process_exited")
+            else:
+                self.state = "failed"
+                self.last_error = f"process_exit:{return_code}"
+                await self._emit(self.last_error)
 
     async def stop(self) -> ModelProcessStatus:
+        async with self._lock:
+            return await self._stop_locked()
+
+    async def _stop_locked(self) -> ModelProcessStatus:
         if self._process is None or self.state in {"stopped", "unregistered"}:
-            self.state = "stopped"
-            await self._emit()
+            if self.state != "stopped":
+                self.state = "stopped"
+                self.pid = None
+                await self._emit()
             return self.status()
         self.state = "stopping"
         await self._emit()
         process = self._process
+        error_code: str | None = None
         try:
             process.terminate()
             await asyncio.wait_for(process.wait(), timeout=self.stop_timeout)
         except asyncio.TimeoutError:
-            process.kill()
-            await process.wait()
+            try:
+                process.kill()
+                await asyncio.wait_for(process.wait(), timeout=self.stop_timeout)
+            except asyncio.TimeoutError:
+                error_code = "process_kill_timeout"
+            except Exception as error:
+                error_code = f"process_kill_failed:{type(error).__name__}"
         except ProcessLookupError:
             pass
-        finally:
+        except Exception as error:
+            error_code = f"process_stop_failed:{type(error).__name__}"
+
+        watch_task = self._watch_task
+        self._watch_task = None
+        if watch_task is not None:
+            watch_task.cancel()
+            await asyncio.gather(watch_task, return_exceptions=True)
+        if error_code is None:
             self.state = "stopped"
             self._process = None
             self.pid = None
             await self._emit()
+        else:
+            self.state = "failed"
+            self.last_error = error_code
+            await self._emit(error_code)
         return self.status()
 
     async def restart(self) -> ModelProcessStatus:
-        self.restart_count += 1
-        await self.stop()
-        return await self.start()
+        async with self._lock:
+            self.restart_count += 1
+            await self._stop_locked()
+            if self._process is not None:
+                return self.status()
+            return await self._start_locked()
 
 
 class ModelProcessSupervisor:
@@ -229,31 +284,46 @@ class ModelProcessSupervisor:
         *,
         factory: ProcessFactory = _spawn_process,
         stop_timeout: float = 2.0,
+        start_timeout: float = 10.0,
     ) -> ManagedModelProcess:
+        if model_id in self._processes:
+            raise ValueError("model_process_already_registered")
+        if not command:
+            raise ValueError("model_process_command_empty")
         process = ManagedModelProcess(
             model_id,
             command,
             factory=factory,
             event_sink=self.event_sink,
             stop_timeout=stop_timeout,
+            start_timeout=start_timeout,
         )
         self._processes[model_id] = process
         return process
 
     def statuses(self) -> list[ModelProcessStatus]:
-        return [process.status() for process in self._processes.values()]
+        return [self._processes[key].status() for key in sorted(self._processes)]
+
+    def _get(self, model_id: str) -> ManagedModelProcess:
+        try:
+            return self._processes[model_id]
+        except KeyError as error:
+            raise ModelProcessNotRegistered(model_id) from error
 
     async def start(self, model_id: str) -> ModelProcessStatus:
-        return await self._processes[model_id].start()
+        return await self._get(model_id).start()
 
     async def stop(self, model_id: str) -> ModelProcessStatus:
-        return await self._processes[model_id].stop()
+        return await self._get(model_id).stop()
 
     async def restart(self, model_id: str) -> ModelProcessStatus:
-        return await self._processes[model_id].restart()
+        return await self._get(model_id).restart()
 
     async def stop_all(self) -> None:
-        await asyncio.gather(*(process.stop() for process in self._processes.values()))
+        await asyncio.gather(
+            *(process.stop() for process in self._processes.values()),
+            return_exceptions=True,
+        )
 
 
 class ModelManager:
@@ -435,12 +505,14 @@ class ModelManager:
         *,
         factory: ProcessFactory = _spawn_process,
         stop_timeout: float = 2.0,
+        start_timeout: float = 10.0,
     ) -> ManagedModelProcess:
         return self.process_supervisor.register(
             model_id,
             command,
             factory=factory,
             stop_timeout=stop_timeout,
+            start_timeout=start_timeout,
         )
 
     async def start_process(self, model_id: str) -> ModelProcessStatus:

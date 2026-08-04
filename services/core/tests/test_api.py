@@ -73,6 +73,87 @@ def test_health_runtime_and_models(tmp_path: Path) -> None:
         assert changed["state"] == "listening"
 
 
+def test_model_process_api_is_id_only_and_rejects_unregistered_components(
+    tmp_path: Path,
+) -> None:
+    config = AppConfig(
+        data_dir=tmp_path,
+        database_path=tmp_path / "xinyu.db",
+        llm_process_command=("local-test", "--safe"),
+    )
+    with TestClient(create_app(config)) as client:
+        listed = client.get("/v1/models/processes")
+        assert listed.status_code == 200
+        assert listed.json() == [
+            {
+                "id": "llm-local",
+                "state": "unregistered",
+                "pid": None,
+                "restart_count": 0,
+                "last_error": None,
+            }
+        ]
+        assert "command" not in listed.text
+        missing = client.post("/v1/models/processes/not-registered/start")
+        assert missing.status_code == 404
+        assert missing.json()["detail"]["code"] == "model_process_not_registered"
+
+
+def test_model_process_api_controls_only_the_registered_local_command(
+    tmp_path: Path,
+) -> None:
+    class FakeProcess:
+        def __init__(self, pid: int) -> None:
+            self.pid = pid
+            self.exited = asyncio.Event()
+
+        def terminate(self) -> None:
+            self.exited.set()
+
+        def kill(self) -> None:
+            self.exited.set()
+
+        async def wait(self) -> int:
+            await self.exited.wait()
+            return 0
+
+    config = AppConfig(
+        data_dir=tmp_path,
+        database_path=tmp_path / "xinyu.db",
+        llm_process_command=("configured-locally", "--private-path"),
+    )
+    app = create_app(config)
+    spawned_commands = []
+
+    async def factory(command):
+        spawned_commands.append(command)
+        return FakeProcess(300 + len(spawned_commands))
+
+    managed = app.state.model_manager.process_supervisor._get("llm-local")
+    managed.factory = factory
+
+    with TestClient(app) as client:
+        started = client.post("/v1/models/processes/llm-local/start")
+        duplicate = client.post("/v1/models/processes/llm-local/start")
+        restarted = client.post("/v1/models/processes/llm-local/restart")
+        stopped = client.post("/v1/models/processes/llm-local/stop")
+
+        assert started.json()["state"] == "running"
+        assert duplicate.json()["pid"] == started.json()["pid"]
+        assert restarted.json()["state"] == "running"
+        assert restarted.json()["restart_count"] == 1
+        assert restarted.json()["pid"] != started.json()["pid"]
+        assert stopped.json()["state"] == "stopped"
+        assert len(spawned_commands) == 2
+        assert spawned_commands == [
+            ["configured-locally", "--private-path"],
+            ["configured-locally", "--private-path"],
+        ]
+        for response in (started, duplicate, restarted, stopped):
+            assert "command" not in response.text
+            assert "private-path" not in response.text
+
+
 def test_complete_avatar_state_library_is_served_as_local_media(
     tmp_path: Path,
 ) -> None:
