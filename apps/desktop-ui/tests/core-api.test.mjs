@@ -95,6 +95,27 @@ test("uses privacy-safe music library endpoint contracts", async () => {
   );
 });
 
+test("uses disabled-by-default weather and calendar contracts", async () => {
+  const requests = [];
+  globalThis.fetch = async (url) => {
+    requests.push(url);
+    return jsonResponse({ status: { status: "disabled" }, events: [] });
+  };
+
+  await coreApi.integrationStatuses();
+  await coreApi.currentWeather();
+  await coreApi.calendarEvents(
+    "2026-08-04T00:00:00Z",
+    "2026-08-05T00:00:00Z",
+  );
+
+  assert.deepEqual(requests, [
+    "/core/v1/integrations/status",
+    "/core/v1/weather/current",
+    "/core/v1/calendar/events?start=2026-08-04T00%3A00%3A00Z&end=2026-08-05T00%3A00%3A00Z",
+  ]);
+});
+
 test("requests the privacy-safe diagnostics endpoint", async () => {
   let capturedUrl;
   globalThis.fetch = async (url) => {

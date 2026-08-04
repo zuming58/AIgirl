@@ -655,3 +655,37 @@ def test_music_library_api_is_disabled_without_local_configuration(
         assert scanned.json()["tracks"] == []
         assert missing.status_code == 404
         assert missing.json()["detail"]["code"] == "music_track_unavailable"
+
+
+def test_weather_and_calendar_apis_are_disabled_without_authorization(
+    tmp_path: Path,
+) -> None:
+    with make_client(tmp_path) as client:
+        statuses = client.get("/v1/integrations/status").json()
+        weather = client.get("/v1/weather/current").json()
+        calendar = client.get(
+            "/v1/calendar/events",
+            params={
+                "start": "2026-08-04T00:00:00+00:00",
+                "end": "2026-08-05T00:00:00+00:00",
+            },
+        ).json()
+
+        assert [item["status"] for item in statuses] == [
+            "disabled",
+            "disabled",
+        ]
+        assert weather["current"] is None
+        assert weather["status"]["error_code"] == "weather_not_configured"
+        assert calendar["events"] == []
+        assert calendar["status"]["error_code"] == "calendar_not_configured"
+
+        invalid = client.get(
+            "/v1/calendar/events",
+            params={
+                "start": "2026-08-05T00:00:00+00:00",
+                "end": "2026-08-04T00:00:00+00:00",
+            },
+        )
+        assert invalid.status_code == 422
+        assert invalid.json()["detail"]["code"] == "calendar_range_invalid"

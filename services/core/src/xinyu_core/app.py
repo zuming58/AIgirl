@@ -19,6 +19,7 @@ from .contracts import (
     ChatRequest,
     ChatResponse,
     BackupRecord,
+    CalendarResponse,
     ConfirmAction,
     ConversationSummary,
     ConversationSummaryList,
@@ -28,6 +29,7 @@ from .contracts import (
     DataImportResult,
     DiagnosticReport,
     EventEnvelope,
+    ExternalProviderStatus,
     HealthResponse,
     MemoryCreate,
     MemoryContext,
@@ -54,6 +56,7 @@ from .contracts import (
     SystemCapabilities,
     VoiceTranscriptCreate,
     VoiceSessionResponse,
+    WeatherResponse,
 )
 from .avatar import AvatarRuntime
 from .database import Database
@@ -61,6 +64,7 @@ from .diagnostics import inspect_system
 from .events import EventHub
 from .embeddings import create_embedding_provider
 from .memory_intelligence import MemoryIntelligenceService
+from .integrations import DesktopIntegrationService
 from .music import MusicLibrary
 from .model_manager import (
     ModelManager,
@@ -91,6 +95,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     speech_runtime = SpeechRuntime(config.speech_realtime_url)
     avatar_runtime = AvatarRuntime(config.data_dir)
     music_library = MusicLibrary(database, config.music_directories)
+    integrations = DesktopIntegrationService()
 
     async def publish_process_event(event: ProcessEvent) -> None:
         await event_hub.publish(
@@ -190,6 +195,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     app.state.avatar_runtime = avatar_runtime
     app.state.model_manager = model_manager
     app.state.music_library = music_library
+    app.state.integrations = integrations
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[
@@ -351,6 +357,44 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     @app.get("/v1/models", response_model=list[ModelRecord])
     def models(_: None = Depends(authorize)) -> list[ModelRecord]:
         return [ModelRecord(**item) for item in repository.list_models()]
+
+    @app.get(
+        "/v1/integrations/status",
+        response_model=list[ExternalProviderStatus],
+    )
+    def integration_statuses(
+        _: None = Depends(authorize),
+    ) -> list[ExternalProviderStatus]:
+        return integrations.statuses()
+
+    @app.get("/v1/weather/current", response_model=WeatherResponse)
+    async def current_weather(
+        _: None = Depends(authorize),
+    ) -> WeatherResponse:
+        return await integrations.current_weather()
+
+    @app.get("/v1/calendar/events", response_model=CalendarResponse)
+    async def calendar_events(
+        start: datetime = Query(),
+        end: datetime = Query(),
+        _: None = Depends(authorize),
+    ) -> CalendarResponse:
+        if start.tzinfo is None or end.tzinfo is None:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "calendar_timezone_required"},
+            )
+        if end <= start:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "calendar_range_invalid"},
+            )
+        if (end - start).days > 366:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "calendar_range_too_large"},
+            )
+        return await integrations.calendar_events(start, end)
 
     @app.get("/v1/music/library", response_model=MusicLibraryResponse)
     def list_music_library(

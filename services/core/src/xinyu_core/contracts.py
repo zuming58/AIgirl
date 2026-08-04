@@ -319,6 +319,43 @@ class MusicLibraryResponse(ApiModel):
     tracks: list[MusicTrackRecord] = Field(default_factory=list)
 
 
+class ExternalProviderStatus(ApiModel):
+    kind: Literal["weather", "calendar"]
+    provider: str
+    status: Literal["ready", "disabled", "degraded"]
+    authorized: bool = False
+    authorization_required: bool = True
+    error_code: str | None = None
+
+
+class WeatherCurrent(ApiModel):
+    location_label: str
+    observed_at: datetime
+    condition: str
+    temperature_c: float
+    feels_like_c: float | None = None
+    humidity_percent: int | None = Field(default=None, ge=0, le=100)
+
+
+class WeatherResponse(ApiModel):
+    status: ExternalProviderStatus
+    current: WeatherCurrent | None = None
+
+
+class CalendarEventRecord(ApiModel):
+    id: str
+    title: str
+    starts_at: datetime
+    ends_at: datetime
+    all_day: bool = False
+    calendar_label: str | None = None
+
+
+class CalendarResponse(ApiModel):
+    status: ExternalProviderStatus
+    events: list[CalendarEventRecord] = Field(default_factory=list)
+
+
 class PersonaUpdate(ApiModel):
     name: str = Field(default="心屿", min_length=1, max_length=40)
     relationship_role: str = Field(default="companion", max_length=80)
