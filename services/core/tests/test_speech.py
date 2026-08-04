@@ -303,3 +303,84 @@ def test_voice_relay_forwards_text_audio_and_interruption_metrics() -> None:
         assert events[-1][1].interruptions == 1
 
     asyncio.run(exercise())
+
+
+def test_voice_relay_clears_queued_audio_on_interruption_and_closes_upstream() -> None:
+    audio_gate = asyncio.Event()
+    finished = asyncio.Event()
+
+    class Client:
+        def __init__(self) -> None:
+            self.messages = [
+                {"type": "websocket.receive", "text": '{"type":"session.start"}'},
+                {
+                    "type": "websocket.receive",
+                    "text": '{"type":"input_audio_buffer.append"}',
+                },
+            ]
+            self.sent_text = []
+            self.sent_bytes = []
+            self.audio_gate = asyncio.Event()
+
+        async def receive(self):
+            if self.messages:
+                await asyncio.sleep(0)
+                return self.messages.pop(0)
+            await finished.wait()
+            return {"type": "websocket.disconnect"}
+
+        async def send_text(self, value):
+            self.sent_text.append(value)
+            finished.set()
+
+        async def send_bytes(self, value):
+            self.sent_bytes.append(value)
+            await audio_gate.wait()
+
+    class Upstream:
+        def __init__(self) -> None:
+            self.sent = []
+            self.replies = [
+                b"audio-1",
+                b"audio-2",
+                '{"type":"response.cancelled"}',
+            ]
+            self.closed = False
+
+        async def send(self, value):
+            self.sent.append(value)
+
+        async def recv(self):
+            await asyncio.sleep(0)
+            if self.replies:
+                reply = self.replies.pop(0)
+                if reply == '{"type":"response.cancelled"}':
+                    audio_gate.set()
+                return reply
+            await asyncio.Future()
+
+        async def close(self):
+            self.closed = True
+
+    async def exercise():
+        client = Client()
+        upstream = Upstream()
+        await relay_voice_messages(client, upstream, queue_size=2)
+        assert len(client.sent_bytes) == 1
+        assert client.sent_bytes[0] in {b"audio-1", b"audio-2"}
+        assert client.sent_text == ['{"type":"response.cancelled"}']
+        assert upstream.closed is True
+
+    asyncio.run(exercise())
+
+
+def test_voice_relay_rejects_an_unbounded_queue_configuration() -> None:
+    async def exercise():
+        try:
+            await relay_voice_messages(FakeClientSocket(), FakeUpstreamSocket(), queue_size=0)
+        except ValueError as error:
+            assert str(error) == "voice_queue_size_out_of_range"
+        else:
+            raise AssertionError("expected queue size validation")
+
+    asyncio.run(exercise())

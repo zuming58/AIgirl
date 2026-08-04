@@ -218,8 +218,30 @@ async def relay_voice_messages(
     upstream: Any,
     on_event: Callable[[str, VoiceLatencyMetrics], Awaitable[None] | None] | None = None,
     tracker: VoiceLatencyTracker | None = None,
+    queue_size: int = 64,
 ) -> None:
+    if queue_size < 1 or queue_size > 1024:
+        raise ValueError("voice_queue_size_out_of_range")
     tracker = tracker or VoiceLatencyTracker()
+    client_to_upstream_queue: asyncio.Queue[str | bytes] = asyncio.Queue(
+        maxsize=queue_size
+    )
+    upstream_to_client_queue: asyncio.Queue[str | bytes] = asyncio.Queue(
+        maxsize=queue_size
+    )
+
+    def discard_queued_audio() -> None:
+        retained: list[str | bytes] = []
+        while True:
+            try:
+                item = upstream_to_client_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if not isinstance(item, bytes):
+                retained.append(item)
+            upstream_to_client_queue.task_done()
+        for item in retained:
+            upstream_to_client_queue.put_nowait(item)
 
     async def observe_message(message: str | bytes, source: str) -> None:
         if isinstance(message, bytes):
@@ -231,10 +253,20 @@ async def relay_voice_messages(
         except (TypeError, ValueError):
             return
         event_type = payload.get("type")
-        if not isinstance(event_type, str) or not tracker.observe(
-            event_type,
-            source=source,
-        ):
+        if not isinstance(event_type, str):
+            return
+        if event_type in {
+            "response.cancelled",
+            "response.interrupted",
+            "conversation.item.truncated",
+        } or source == "client" and event_type in {
+            "input_audio_buffer.append",
+            "input_audio_buffer.commit",
+            "response.cancel",
+        }:
+            # Stop already queued playback as soon as the user takes the turn.
+            discard_queued_audio()
+        if not tracker.observe(event_type, source=source):
             return
         if on_event is not None:
             result = on_event(event_type, tracker.snapshot())
@@ -248,35 +280,65 @@ async def relay_voice_messages(
                 return
             if message.get("bytes") is not None:
                 await observe_message(message["bytes"], "client")
-                await upstream.send(message["bytes"])
+                await client_to_upstream_queue.put(message["bytes"])
             elif message.get("text") is not None:
                 await observe_message(message["text"], "client")
-                await upstream.send(message["text"])
+                await client_to_upstream_queue.put(message["text"])
+
+    async def send_client_messages() -> None:
+        while True:
+            message = await client_to_upstream_queue.get()
+            try:
+                await upstream.send(message)
+            finally:
+                client_to_upstream_queue.task_done()
 
     async def upstream_to_client() -> None:
         while True:
             message = await upstream.recv()
+            if message is None:
+                return
             if isinstance(message, bytes):
                 await observe_message(message, "upstream")
-                await client.send_bytes(message)
+                await upstream_to_client_queue.put(message)
             else:
                 await observe_message(message, "upstream")
-                await client.send_text(message)
+                await upstream_to_client_queue.put(message)
+
+    async def send_upstream_messages() -> None:
+        while True:
+            message = await upstream_to_client_queue.get()
+            try:
+                if isinstance(message, bytes):
+                    await client.send_bytes(message)
+                else:
+                    await client.send_text(message)
+            finally:
+                upstream_to_client_queue.task_done()
 
     tasks = {
         asyncio.create_task(client_to_upstream()),
+        asyncio.create_task(send_client_messages()),
         asyncio.create_task(upstream_to_client()),
+        asyncio.create_task(send_upstream_messages()),
     }
-    done, pending = await asyncio.wait(
-        tasks,
-        return_when=asyncio.FIRST_COMPLETED,
-    )
-    for task in pending:
-        task.cancel()
-    await asyncio.gather(*pending, return_exceptions=True)
-    results = await asyncio.gather(*done, return_exceptions=True)
-    for result in results:
-        if isinstance(result, asyncio.CancelledError):
-            continue
-        if isinstance(result, BaseException):
-            raise result
+    try:
+        done, pending = await asyncio.wait(
+            tasks,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+        results = await asyncio.gather(*done, return_exceptions=True)
+        for result in results:
+            if isinstance(result, asyncio.CancelledError):
+                continue
+            if isinstance(result, BaseException):
+                raise result
+    finally:
+        close = getattr(upstream, "close", None)
+        if close is not None:
+            result = close()
+            if inspect.isawaitable(result):
+                await result
