@@ -80,6 +80,25 @@ def test_music_library_keeps_missing_record_with_recovery_hint(tmp_path: Path) -
     assert library.audio_path(track_id) is None
 
 
+def test_music_library_skips_a_corrupt_file_without_exposing_its_path(
+    tmp_path: Path,
+) -> None:
+    library, _, first, _ = make_library(tmp_path)
+    valid = first / "周末乐队 - 晚风.wav"
+    corrupt = first / "不能读取的录音.mp3"
+    write_silent_wav(valid)
+    corrupt.write_bytes(b"not an audio file")
+
+    response = library.scan()
+
+    assert response.status.status == "degraded"
+    assert response.status.track_count == 1
+    assert response.status.skipped_count == 1
+    assert response.status.error_code == "music_files_skipped"
+    assert response.tracks[0].title == "晚风"
+    assert str(tmp_path) not in response.model_dump_json()
+
+
 def test_music_directories_require_a_json_string_array(tmp_path: Path, monkeypatch) -> None:
     first = tmp_path / "music-a"
     second = tmp_path / "music-b"

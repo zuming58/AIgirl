@@ -4,6 +4,7 @@ import asyncio
 import base64
 import hashlib
 import inspect
+import json
 import os
 import socket
 import ssl
@@ -230,6 +231,18 @@ async def relay_voice_messages(
         maxsize=queue_size
     )
 
+    def is_audio_message(message: str | bytes) -> bool:
+        if isinstance(message, bytes):
+            return True
+        try:
+            payload = json.loads(message)
+        except (TypeError, ValueError):
+            return False
+        return payload.get("type") in {
+            "response.audio.delta",
+            "response.output_audio.delta",
+        }
+
     def discard_queued_audio() -> None:
         retained: list[str | bytes] = []
         while True:
@@ -237,7 +250,7 @@ async def relay_voice_messages(
                 item = upstream_to_client_queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
-            if not isinstance(item, bytes):
+            if not is_audio_message(item):
                 retained.append(item)
             upstream_to_client_queue.task_done()
         for item in retained:
@@ -247,8 +260,6 @@ async def relay_voice_messages(
         if isinstance(message, bytes):
             return
         try:
-            import json
-
             payload = json.loads(message)
         except (TypeError, ValueError):
             return

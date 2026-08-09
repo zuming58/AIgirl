@@ -310,6 +310,7 @@ class MusicLibraryStatus(ApiModel):
     status: Literal["ready", "disabled", "degraded"]
     track_count: int = Field(default=0, ge=0)
     missing_count: int = Field(default=0, ge=0)
+    skipped_count: int = Field(default=0, ge=0)
     last_scan_at: datetime | None = None
     error_code: str | None = None
 

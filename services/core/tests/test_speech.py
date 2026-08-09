@@ -256,7 +256,7 @@ def test_voice_relay_forwards_text_audio_and_interruption_metrics() -> None:
 
         async def send_text(self, value):
             self.sent_text.append(value)
-            if len(self.sent_text) == 3:
+            if '"type":"response.cancelled"' in value:
                 self.release.set()
 
         async def send_bytes(self, value):
@@ -369,6 +369,75 @@ def test_voice_relay_clears_queued_audio_on_interruption_and_closes_upstream() -
         assert len(client.sent_bytes) == 1
         assert client.sent_bytes[0] in {b"audio-1", b"audio-2"}
         assert client.sent_text == ['{"type":"response.cancelled"}']
+        assert upstream.closed is True
+
+    asyncio.run(exercise())
+
+
+def test_voice_relay_discards_queued_json_audio_before_cancellation() -> None:
+    audio_gate = asyncio.Event()
+    finished = asyncio.Event()
+
+    class Client:
+        def __init__(self) -> None:
+            self.sent_text = []
+            self.input_sent = False
+
+        async def receive(self):
+            if not self.input_sent:
+                self.input_sent = True
+                return {
+                    "type": "websocket.receive",
+                    "text": '{"type":"input_audio_buffer.append"}',
+                }
+            await finished.wait()
+            return {"type": "websocket.disconnect"}
+
+        async def send_text(self, value):
+            self.sent_text.append(value)
+            if '"type":"response.audio.delta"' in value:
+                await audio_gate.wait()
+            if '"type":"response.cancelled"' in value:
+                finished.set()
+
+        async def send_bytes(self, value):
+            raise AssertionError("the simulated upstream sends JSON audio deltas")
+
+    class Upstream:
+        def __init__(self) -> None:
+            self.replies = [
+                '{"type":"response.audio.delta","delta":"audio-1"}',
+                '{"type":"response.audio.delta","delta":"audio-2"}',
+                '{"type":"response.output_audio.delta","delta":"audio-3"}',
+                '{"type":"response.audio_transcript.delta","delta":"still relevant"}',
+                '{"type":"response.cancelled"}',
+            ]
+            self.closed = False
+
+        async def send(self, value):
+            return None
+
+        async def recv(self):
+            await asyncio.sleep(0)
+            if self.replies:
+                reply = self.replies.pop(0)
+                if reply == '{"type":"response.cancelled"}':
+                    audio_gate.set()
+                return reply
+            await asyncio.Future()
+
+        async def close(self):
+            self.closed = True
+
+    async def exercise():
+        client = Client()
+        upstream = Upstream()
+        await relay_voice_messages(client, upstream, queue_size=8)
+        assert client.sent_text == [
+            '{"type":"response.audio.delta","delta":"audio-1"}',
+            '{"type":"response.audio_transcript.delta","delta":"still relevant"}',
+            '{"type":"response.cancelled"}',
+        ]
         assert upstream.closed is True
 
     asyncio.run(exercise())

@@ -27,3 +27,5 @@ GET  /v1/music/tracks/{track_id}/audio
 通过 SHA-256 指纹恢复原记录；文件断开时记录保留为 `missing` 并给出恢复提示。
 
 扫描在后台线程中运行。当前里程碑没有自动监控目录，也没有提交任何音乐或封面文件。
+单个损坏、无法读取或格式与扩展名不匹配的音频不会中断整个扫描；接口会保留其余有效曲目，并以
+`degraded`、`music_files_skipped` 和 `skipped_count` 返回可诊断但不含本机路径的状态。

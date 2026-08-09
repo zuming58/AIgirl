@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from mutagen import File as MutagenFile
+from mutagen import File as MutagenFile, MutagenError
 
 from .contracts import MusicLibraryResponse, MusicLibraryStatus, MusicTrackRecord
 from .database import Database, iso_now
@@ -59,6 +59,7 @@ class MusicLibrary:
             return self.list()
         roots = [path for path in self.directories if path.is_dir()]
         seen: set[str] = set()
+        skipped = 0
         scan_at = iso_now()
         with self.database.connect() as connection:
             for root in roots:
@@ -68,25 +69,31 @@ class MusicLibrary:
                     path = candidate.resolve()
                     if not path.is_relative_to(root.resolve()):
                         continue
-                    fingerprint = _fingerprint(path)
-                    audio = MutagenFile(path, easy=True)
-                    tags = getattr(audio, "tags", None)
-                    stem_artist, separator, stem_title = path.stem.partition(" - ")
-                    title = _first(tags, "title") or (stem_title if separator else path.stem)
-                    artist = _first(tags, "artist", "albumartist") or (
-                        stem_artist if separator else None
-                    )
-                    album = _first(tags, "album")
-                    length = getattr(getattr(audio, "info", None), "length", None)
-                    metadata = {
-                        "title": title[:500],
-                        "artist": artist[:500] if artist else None,
-                        "album": album[:500] if album else None,
-                        "duration_seconds": round(float(length), 3) if length else None,
-                        "status": "available",
-                        "cover_available": _has_cover(path),
-                        "last_scan_at": scan_at,
-                    }
+                    try:
+                        fingerprint = _fingerprint(path)
+                        audio = MutagenFile(path, easy=True)
+                        if audio is None:
+                            raise ValueError("unsupported_audio_file")
+                        tags = getattr(audio, "tags", None)
+                        stem_artist, separator, stem_title = path.stem.partition(" - ")
+                        title = _first(tags, "title") or (stem_title if separator else path.stem)
+                        artist = _first(tags, "artist", "albumartist") or (
+                            stem_artist if separator else None
+                        )
+                        album = _first(tags, "album")
+                        length = getattr(getattr(audio, "info", None), "length", None)
+                        metadata = {
+                            "title": title[:500],
+                            "artist": artist[:500] if artist else None,
+                            "album": album[:500] if album else None,
+                            "duration_seconds": round(float(length), 3) if length else None,
+                            "status": "available",
+                            "cover_available": _has_cover(path),
+                            "last_scan_at": scan_at,
+                        }
+                    except (OSError, TypeError, ValueError, MutagenError):
+                        skipped += 1
+                        continue
                     row = connection.execute(
                         "SELECT id FROM media_assets WHERE kind='music' AND sha256=?",
                         (fingerprint,),
@@ -121,9 +128,17 @@ class MusicLibrary:
                     "UPDATE media_assets SET metadata_json=? WHERE id=?",
                     (json.dumps(metadata, ensure_ascii=False), row["id"]),
                 )
-        return self.list()
+        return self.list(
+            skipped_count=skipped,
+            error_code="music_files_skipped" if skipped else None,
+        )
 
-    def list(self) -> MusicLibraryResponse:
+    def list(
+        self,
+        *,
+        skipped_count: int = 0,
+        error_code: str | None = None,
+    ) -> MusicLibraryResponse:
         with self.database.connect() as connection:
             rows = connection.execute(
                 "SELECT id, path, metadata_json FROM media_assets WHERE kind='music' ORDER BY created_at"
@@ -155,11 +170,18 @@ class MusicLibrary:
         return MusicLibraryResponse(
             status=MusicLibraryStatus(
                 configured=configured,
-                status="disabled" if not configured else ("degraded" if missing else "ready"),
+                status=(
+                    "disabled"
+                    if not configured
+                    else ("degraded" if missing or skipped_count else "ready")
+                ),
                 track_count=len(tracks),
                 missing_count=missing,
+                skipped_count=skipped_count,
                 last_scan_at=last_scan,
-                error_code=None if configured else "music_library_not_configured",
+                error_code=(
+                    "music_library_not_configured" if not configured else error_code
+                ),
             ),
             tracks=tracks,
         )
