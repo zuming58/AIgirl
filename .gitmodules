@@ -1,3 +1,6 @@
 [submodule "third_party/speech-to-speech"]
 	path = third_party/speech-to-speech
 	url = https://github.com/huggingface/speech-to-speech.git
+[submodule "third_party/LivePortrait"]
+	path = third_party/LivePortrait
+	url = https://github.com/KlingTeam/LivePortrait.git
