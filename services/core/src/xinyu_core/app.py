@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -18,6 +19,7 @@ from .contracts import (
     ChatRequest,
     ChatResponse,
     BackupRecord,
+    CalendarResponse,
     ConfirmAction,
     ConversationSummary,
     ConversationSummaryList,
@@ -27,6 +29,7 @@ from .contracts import (
     DataImportResult,
     DiagnosticReport,
     EventEnvelope,
+    ExternalProviderStatus,
     HealthResponse,
     MemoryCreate,
     MemoryContext,
@@ -37,6 +40,8 @@ from .contracts import (
     MemoryUpdate,
     MessageRecord,
     ModelRecord,
+    ModelProcessStatus,
+    MusicLibraryResponse,
     MoodRecord,
     MoodUpdate,
     NotificationRecord,
@@ -51,6 +56,7 @@ from .contracts import (
     SystemCapabilities,
     VoiceTranscriptCreate,
     VoiceSessionResponse,
+    WeatherResponse,
 )
 from .avatar import AvatarRuntime
 from .database import Database
@@ -58,13 +64,20 @@ from .diagnostics import inspect_system
 from .events import EventHub
 from .embeddings import create_embedding_provider
 from .memory_intelligence import MemoryIntelligenceService
-from .model_manager import ModelManager
+from .integrations import DesktopIntegrationService
+from .music import MusicLibrary
+from .model_manager import (
+    ModelManager,
+    ModelProcessNotRegistered,
+    ModelProcessSupervisor,
+    ProcessEvent,
+)
 from .providers import create_provider
 from .reminders import ReminderScheduler
 from .repository import Repository
 from .services import ChatService
 from .summaries import ConversationSummaryService, create_summary_provider
-from .speech import SpeechRuntime, relay_voice_messages
+from .speech import SpeechRuntime, VoiceLatencyTracker, relay_voice_messages
 
 
 def create_app(config: AppConfig | None = None) -> FastAPI:
@@ -81,12 +94,38 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     )
     speech_runtime = SpeechRuntime(config.speech_realtime_url)
     avatar_runtime = AvatarRuntime(config.data_dir)
+    music_library = MusicLibrary(database, config.music_directories)
+    integrations = DesktopIntegrationService()
+
+    async def publish_process_event(event: ProcessEvent) -> None:
+        await event_hub.publish(
+            EventEnvelope(
+                type="runtime.process.changed",
+                payload={
+                    "model_id": event.model_id,
+                    "state": event.state,
+                    "detail": event.detail,
+                },
+            )
+        )
+
     model_manager = ModelManager(
         config,
         inspect_system(),
         speech_runtime,
         avatar_runtime,
+        process_supervisor=ModelProcessSupervisor(event_sink=publish_process_event),
     )
+    if config.llm_process_command:
+        model_manager.register_process(
+            "llm-local",
+            list(config.llm_process_command),
+        )
+    if config.speech_process_command:
+        model_manager.register_process(
+            "speech-runtime",
+            list(config.speech_process_command),
+        )
     chat_service = ChatService(
         repository,
         provider,
@@ -136,6 +175,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             yield
         finally:
             await reminder_scheduler.stop()
+            await model_manager.stop_all_processes()
             await memory_intelligence.close()
             await summary_service.close()
 
@@ -154,6 +194,8 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     app.state.reminder_scheduler = reminder_scheduler
     app.state.avatar_runtime = avatar_runtime
     app.state.model_manager = model_manager
+    app.state.music_library = music_library
+    app.state.integrations = integrations
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[
@@ -199,6 +241,59 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     @app.get("/v1/runtime/status", response_model=RuntimeStatus)
     def runtime_status(_: None = Depends(authorize)) -> RuntimeStatus:
         return current_runtime_status()
+
+    @app.get(
+        "/v1/models/processes",
+        response_model=list[ModelProcessStatus],
+    )
+    def model_processes(_: None = Depends(authorize)) -> list[ModelProcessStatus]:
+        return model_manager.process_supervisor.statuses()
+
+    async def operate_model_process(
+        component_id: str,
+        operation: str,
+    ) -> ModelProcessStatus:
+        try:
+            if operation == "start":
+                return await model_manager.start_process(component_id)
+            if operation == "stop":
+                return await model_manager.stop_process(component_id)
+            return await model_manager.restart_process(component_id)
+        except ModelProcessNotRegistered as error:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "model_process_not_registered"},
+            ) from error
+
+    @app.post(
+        "/v1/models/processes/{component_id}/start",
+        response_model=ModelProcessStatus,
+    )
+    async def start_model_process(
+        component_id: str,
+        _: None = Depends(authorize),
+    ) -> ModelProcessStatus:
+        return await operate_model_process(component_id, "start")
+
+    @app.post(
+        "/v1/models/processes/{component_id}/stop",
+        response_model=ModelProcessStatus,
+    )
+    async def stop_model_process(
+        component_id: str,
+        _: None = Depends(authorize),
+    ) -> ModelProcessStatus:
+        return await operate_model_process(component_id, "stop")
+
+    @app.post(
+        "/v1/models/processes/{component_id}/restart",
+        response_model=ModelProcessStatus,
+    )
+    async def restart_model_process(
+        component_id: str,
+        _: None = Depends(authorize),
+    ) -> ModelProcessStatus:
+        return await operate_model_process(component_id, "restart")
 
     @app.get("/v1/system/capabilities", response_model=SystemCapabilities)
     def system_capabilities(
@@ -262,6 +357,86 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     @app.get("/v1/models", response_model=list[ModelRecord])
     def models(_: None = Depends(authorize)) -> list[ModelRecord]:
         return [ModelRecord(**item) for item in repository.list_models()]
+
+    @app.get(
+        "/v1/integrations/status",
+        response_model=list[ExternalProviderStatus],
+    )
+    def integration_statuses(
+        _: None = Depends(authorize),
+    ) -> list[ExternalProviderStatus]:
+        return integrations.statuses()
+
+    @app.get("/v1/weather/current", response_model=WeatherResponse)
+    async def current_weather(
+        _: None = Depends(authorize),
+    ) -> WeatherResponse:
+        return await integrations.current_weather()
+
+    @app.get("/v1/calendar/events", response_model=CalendarResponse)
+    async def calendar_events(
+        start: datetime = Query(),
+        end: datetime = Query(),
+        _: None = Depends(authorize),
+    ) -> CalendarResponse:
+        if start.tzinfo is None or end.tzinfo is None:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "calendar_timezone_required"},
+            )
+        if end <= start:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "calendar_range_invalid"},
+            )
+        if (end - start).days > 366:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "calendar_range_too_large"},
+            )
+        return await integrations.calendar_events(start, end)
+
+    @app.get("/v1/music/library", response_model=MusicLibraryResponse)
+    def list_music_library(
+        _: None = Depends(authorize),
+    ) -> MusicLibraryResponse:
+        return music_library.list()
+
+    @app.post("/v1/music/library/scan", response_model=MusicLibraryResponse)
+    async def scan_music_library(
+        _: None = Depends(authorize),
+    ) -> MusicLibraryResponse:
+        result = await asyncio.to_thread(music_library.scan)
+        await event_hub.publish(
+            EventEnvelope(
+                type="music.library.scanned",
+                payload=result.status.model_dump(mode="json"),
+            )
+        )
+        return result
+
+    @app.get("/v1/music/tracks/{track_id}/audio")
+    def music_track_audio(
+        track_id: str,
+        token: str | None = Query(default=None),
+        authorization: str | None = Header(default=None),
+    ) -> FileResponse:
+        if config.auth_token and not (
+            authorization == f"Bearer {config.auth_token}"
+            or token == config.auth_token
+        ):
+            raise HTTPException(status_code=401, detail="Invalid local session token")
+        asset = music_library.audio_path(track_id)
+        if asset is None:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "music_track_unavailable"},
+            )
+        return FileResponse(
+            asset,
+            filename=asset.name,
+            content_disposition_type="inline",
+        )
 
     @app.get("/v1/avatar/status", response_model=AvatarStatus)
     def avatar_status(_: None = Depends(authorize)) -> AvatarStatus:
@@ -758,11 +933,31 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                 ).model_dump(mode="json")
             )
             try:
+                latency_tracker = VoiceLatencyTracker()
+
+                async def publish_latency(
+                    event_type: str, metrics
+                ) -> None:
+                    await event_hub.publish(
+                        EventEnvelope(
+                            type="voice.latency",
+                            payload={
+                                "event": event_type,
+                                "metrics": metrics.model_dump(mode="json"),
+                            },
+                        )
+                    )
+
                 async with websocket_connect(
                     speech_status.endpoint,
                     max_size=None,
                 ) as upstream:
-                    await relay_voice_messages(websocket, upstream)
+                    await relay_voice_messages(
+                        websocket,
+                        upstream,
+                        on_event=publish_latency,
+                        tracker=latency_tracker,
+                    )
             except WebSocketDisconnect:
                 return
             except Exception as error:

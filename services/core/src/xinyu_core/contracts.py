@@ -54,6 +54,23 @@ class ModelRuntimePlan(ApiModel):
     budget: ModelRuntimeBudget
     validation_errors: list[str] = Field(default_factory=list)
     components: list[RuntimeComponent]
+    health_checked_at: datetime | None = None
+    processes: list["ModelProcessStatus"] = Field(default_factory=list)
+
+
+class ModelProcessStatus(ApiModel):
+    id: str
+    state: Literal[
+        "unregistered",
+        "starting",
+        "running",
+        "stopping",
+        "stopped",
+        "failed",
+    ]
+    pid: int | None = None
+    restart_count: int = Field(default=0, ge=0)
+    last_error: str | None = None
 
 
 class RuntimeStatus(ApiModel):
@@ -277,6 +294,69 @@ class NotificationRecord(ApiModel):
     created_at: datetime
 
 
+class MusicTrackRecord(ApiModel):
+    id: str
+    title: str
+    artist: str | None = None
+    album: str | None = None
+    duration_seconds: float | None = Field(default=None, ge=0)
+    status: Literal["available", "missing"]
+    cover_available: bool = False
+    recovery_hint: str | None = None
+
+
+class MusicLibraryStatus(ApiModel):
+    configured: bool
+    status: Literal["ready", "disabled", "degraded"]
+    track_count: int = Field(default=0, ge=0)
+    missing_count: int = Field(default=0, ge=0)
+    skipped_count: int = Field(default=0, ge=0)
+    last_scan_at: datetime | None = None
+    error_code: str | None = None
+
+
+class MusicLibraryResponse(ApiModel):
+    status: MusicLibraryStatus
+    tracks: list[MusicTrackRecord] = Field(default_factory=list)
+
+
+class ExternalProviderStatus(ApiModel):
+    kind: Literal["weather", "calendar"]
+    provider: str
+    status: Literal["ready", "disabled", "degraded"]
+    authorized: bool = False
+    authorization_required: bool = True
+    error_code: str | None = None
+
+
+class WeatherCurrent(ApiModel):
+    location_label: str
+    observed_at: datetime
+    condition: str
+    temperature_c: float
+    feels_like_c: float | None = None
+    humidity_percent: int | None = Field(default=None, ge=0, le=100)
+
+
+class WeatherResponse(ApiModel):
+    status: ExternalProviderStatus
+    current: WeatherCurrent | None = None
+
+
+class CalendarEventRecord(ApiModel):
+    id: str
+    title: str
+    starts_at: datetime
+    ends_at: datetime
+    all_day: bool = False
+    calendar_label: str | None = None
+
+
+class CalendarResponse(ApiModel):
+    status: ExternalProviderStatus
+    events: list[CalendarEventRecord] = Field(default_factory=list)
+
+
 class PersonaUpdate(ApiModel):
     name: str = Field(default="心屿", min_length=1, max_length=40)
     relationship_role: str = Field(default="companion", max_length=80)
@@ -318,6 +398,20 @@ class VoiceSessionResponse(ApiModel):
     endpoint: str
     provider: str
     detail: str
+    latency_metrics: "VoiceLatencyMetrics" = Field(default_factory=lambda: VoiceLatencyMetrics())
+
+
+class VoiceLatencyMetrics(ApiModel):
+    session_id: str | None = None
+    turn_id: str | None = None
+    vad_ms: float | None = Field(default=None, ge=0)
+    final_transcript_ms: float | None = Field(default=None, ge=0)
+    first_token_ms: float | None = Field(default=None, ge=0)
+    first_audio_ms: float | None = Field(default=None, ge=0)
+    complete_ms: float | None = Field(default=None, ge=0)
+    interrupted_ms: float | None = Field(default=None, ge=0)
+    turn_interruptions: int = Field(default=0, ge=0)
+    interruptions: int = Field(default=0, ge=0)
 
 
 class VoiceTranscriptCreate(ApiModel):

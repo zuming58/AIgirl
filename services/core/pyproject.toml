@@ -10,8 +10,10 @@ requires-python = ">=3.11,<3.14"
 dependencies = [
   "fastapi>=0.116,<1",
   "httpx>=0.28,<1",
+  "mutagen>=1.47,<2",
   "pydantic>=2.11,<3",
   "sqlite-vec>=0.1.6,<1",
+  "tzdata>=2025.2",
   "uvicorn[standard]>=0.35,<1",
   "websockets>=13,<17",
 ]

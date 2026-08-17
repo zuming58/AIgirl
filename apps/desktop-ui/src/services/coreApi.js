@@ -67,6 +67,17 @@ export const coreApi = {
   updateAvatarState: (value) =>
     request("/v1/avatar/state", jsonOptions("POST", value)),
   models: () => request("/v1/models"),
+  integrationStatuses: () => request("/v1/integrations/status"),
+  currentWeather: () => request("/v1/weather/current"),
+  calendarEvents: (start, end) => {
+    const params = new URLSearchParams({ start, end });
+    return request(`/v1/calendar/events?${params}`);
+  },
+  musicLibrary: () => request("/v1/music/library"),
+  scanMusicLibrary: () =>
+    request("/v1/music/library/scan", { method: "POST" }),
+  musicTrackUrl: (id) =>
+    mediaUrl(`/v1/music/tracks/${encodeURIComponent(id)}/audio`),
   chat: (value) => request("/v1/chat", jsonOptions("POST", value)),
   conversations: (limit = 50) =>
     request(`/v1/conversations?limit=${limit}`),

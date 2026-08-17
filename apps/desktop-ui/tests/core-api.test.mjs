@@ -74,6 +74,48 @@ test("uses stable memory intelligence endpoint contracts", async () => {
   ]);
 });
 
+test("uses privacy-safe music library endpoint contracts", async () => {
+  const requests = [];
+  globalThis.window = { location: { origin: "http://127.0.0.1:4173" } };
+  globalThis.fetch = async (url, options = {}) => {
+    requests.push({ url, method: options.method ?? "GET" });
+    return jsonResponse({ status: { status: "ready" }, tracks: [] });
+  };
+
+  await coreApi.musicLibrary();
+  await coreApi.scanMusicLibrary();
+
+  assert.deepEqual(requests, [
+    { url: "/core/v1/music/library", method: "GET" },
+    { url: "/core/v1/music/library/scan", method: "POST" },
+  ]);
+  assert.equal(
+    coreApi.musicTrackUrl("track id"),
+    "http://127.0.0.1:4173/core/v1/music/tracks/track%20id/audio",
+  );
+});
+
+test("uses disabled-by-default weather and calendar contracts", async () => {
+  const requests = [];
+  globalThis.fetch = async (url) => {
+    requests.push(url);
+    return jsonResponse({ status: { status: "disabled" }, events: [] });
+  };
+
+  await coreApi.integrationStatuses();
+  await coreApi.currentWeather();
+  await coreApi.calendarEvents(
+    "2026-08-04T00:00:00Z",
+    "2026-08-05T00:00:00Z",
+  );
+
+  assert.deepEqual(requests, [
+    "/core/v1/integrations/status",
+    "/core/v1/weather/current",
+    "/core/v1/calendar/events?start=2026-08-04T00%3A00%3A00Z&end=2026-08-05T00%3A00%3A00Z",
+  ]);
+});
+
 test("requests the privacy-safe diagnostics endpoint", async () => {
   let capturedUrl;
   globalThis.fetch = async (url) => {

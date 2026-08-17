@@ -1,6 +1,6 @@
 # 本地实时语音运行时
 
-> 2026-08-04 状态：运行时生命周期增强位于 `agent/voice-runtime-integration` @ `c76b45f`，草稿 PR #2。该分支已增加模型进程 supervisor、协议握手检查和延迟事件，但多轮 WebSocket 会话的逐轮延迟 tracker 仍需修复，暂不合并。
+> 2026-08-04 状态：运行时生命周期增强位于 `agent/voice-runtime-integration`，草稿 PR #2。该分支已增加模型进程 supervisor、协议握手检查和逐轮延迟事件，仍需完成受控进程 API 与 Realtime 可靠性测试，暂不合并。
 
 心屿复用 Hugging Face `speech-to-speech` 的 OpenAI Realtime-compatible WebSocket，而不是重新实现一套私有音频协议。Core 通过 `XINYU_SPEECH_REALTIME_URL` 检测独立语音进程；语音进程崩溃不会拖垮文字对话、记忆和计划。
 
@@ -85,7 +85,44 @@ $env:XINYU_TTS_MODEL = "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
 - `quality_local`：面向 16GB 目标机的本地档；需要 LLM 和语音 Realtime 地址，TTS 固定 0.6B 预算。
 - `quality_cloud_llm`：仍要求外部 OpenAI-compatible LLM 地址，但可在人工基准后尝试 1.7B TTS；不得在实时口型同时常驻时宣称满足 16GB 预算。
 
-`GET /v1/runtime/status` 返回不含地址、路径和密钥的 `model_plan`，包括档位、显存预算、组件状态和稳定错误码。模型服务断开后，文本功能和记忆功能继续可用。
+`GET /v1/runtime/status` 返回不含地址、路径和密钥的 `model_plan`，包括档位、显存预算、组件状态、最近健康检查时间和稳定错误码。LLM 会请求 OpenAI-compatible `/models`，语音会执行 WebSocket `101` 握手；仅端口打开不会显示为 ready。模型服务断开后，文本功能和记忆功能继续可用。
+
+Core 还提供不依赖具体模型实现的进程生命周期接口。每个模型进程可以处于
+`starting / running / stopping / stopped / failed`，异常退出只标记自己的组件，调用方
+可以单独 `restart`；停止有超时和 kill 回退。开发机测试使用假进程，Core 不会因配置了模型
+ID 就自动拉取或启动权重。
+
+可管理进程必须由本机环境提前注册，值是不会经过 shell 的 JSON 参数数组：
+
+```powershell
+$env:XINYU_LLM_PROCESS_COMMAND_JSON = '["C:\\xinyu\\llama-server.exe", "--model", "C:\\models\\companion.gguf"]'
+$env:XINYU_SPEECH_PROCESS_COMMAND_JSON = '["C:\\xinyu\\.venv-voice\\Scripts\\speech-to-speech.exe", "--port", "8766"]'
+```
+
+未配置时进程列表为空，Core 不会猜测可执行文件位置。HTTP 端只接受已注册的组件 ID，
+不接受任意命令字符串，也不会在状态、事件或错误中返回命令、文件路径和密钥：
+
+```text
+GET  /v1/models/processes
+POST /v1/models/processes/{component_id}/start
+POST /v1/models/processes/{component_id}/stop
+POST /v1/models/processes/{component_id}/restart
+```
+
+同一组件的操作按异步锁串行执行；重复 start/stop 幂等，并发 start 只会创建一个子进程。
+启动超时、异常退出和停止 kill 失败使用稳定错误码，其他组件与文字服务不受影响。
+
+Realtime 代理保留上游文本和二进制帧，并在应用事件流发布 `voice.latency`：
+`vad_ms`、`final_transcript_ms`、`first_token_ms`、`first_audio_ms`、`complete_ms` 和
+`interrupted_ms`。指标带有稳定的会话 ID 和逐轮 turn ID；`turn_interruptions` 是当前轮
+打断次数，`interruptions` 是会话累计打断次数。每轮新输入、插话或新响应都会清空上一轮
+里程碑，但不会保存音频或对话正文。上游断线会发送可恢复错误，文字聊天、记忆和计划服务
+不受影响。
+
+Core 中继的每个方向使用 64 帧有界队列（可由测试传入更小的上限）；慢客户端或上游会
+自然形成背压，队列不会无限增长。客户端断开、上游半关闭或协议异常时会取消剩余任务并
+释放上游连接。用户新输入、`response.cancelled` 或 `response.interrupted` 到达时，会丢弃
+尚未发送的二进制音频帧以及 Realtime 协议的 JSON 音频增量，再保留并转发转写与取消事件；正在播放的帧由上游/客户端协议自行结束。
 
 ## 启动
 

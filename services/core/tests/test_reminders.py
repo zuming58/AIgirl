@@ -127,3 +127,39 @@ def test_quiet_hours_support_ranges_that_cross_midnight() -> None:
     assert is_quiet_time("23:30-08:00", late) is True
     assert is_quiet_time("23:30-08:00", morning) is True
     assert is_quiet_time("23:30-08:00", daytime) is False
+
+
+def test_quiet_hours_use_configured_timezone_across_dst_boundaries() -> None:
+    before_spring_jump = datetime(2026, 3, 8, 6, 45, tzinfo=timezone.utc)
+    after_spring_jump = datetime(2026, 3, 8, 7, 15, tzinfo=timezone.utc)
+    repeated_fall_hour = datetime(2026, 11, 1, 6, 15, tzinfo=timezone.utc)
+
+    assert (
+        is_quiet_time(
+            "01:30-03:30",
+            before_spring_jump,
+            "America/New_York",
+        )
+        is True
+    )
+    assert (
+        is_quiet_time(
+            "01:30-03:30",
+            after_spring_jump,
+            "America/New_York",
+        )
+        is True
+    )
+    assert (
+        is_quiet_time(
+            "01:00-02:00",
+            repeated_fall_hour,
+            "America/New_York",
+        )
+        is True
+    )
+
+
+def test_invalid_notification_timezone_falls_back_without_error() -> None:
+    current = datetime(2026, 8, 4, 12, 0, tzinfo=timezone.utc)
+    assert isinstance(is_quiet_time("23:30-08:00", current, "Invalid/Zone"), bool)
