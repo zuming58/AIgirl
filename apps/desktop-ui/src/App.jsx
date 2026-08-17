@@ -1599,8 +1599,8 @@ export function App() {
     <main className={`companion-shell view-${tabModes[activeTab]}`}>
       <img
         className="room-background"
-        src="/assets/xinyu-room-hero-reference-layout-v4.png"
-        alt="温暖夜晚的房间里，心屿坐在放着日记本的书桌前陪伴用户"
+        src="/assets/xinyu-room-current-4k.png"
+        alt="雨夜的温暖房间里，心屿坐在笔记本电脑旁陪伴用户"
       />
       {avatarStatus?.renderer === "video_state_library" &&
         avatarStatus.available_states?.includes(avatarStatus.state) && (
